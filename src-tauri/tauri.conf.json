@@ -57,7 +57,7 @@
     "shortDescription": "Local-only encrypted password manager",
     "longDescription": "SafeKey is a secure, local-only password manager. No cloud, no syncing - your data stays on your device. Features Argon2id encryption, password generator, strength analyzer, secure notes, and TOTP support.",
     "category": "Utility",
-    "copyright": "© 2026 Dreadonyx",
+    "copyright": "© 2026 H3M4N1H",
     "license": "MIT"
   },
   "plugins": {}

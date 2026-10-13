@@ -2,7 +2,7 @@
 name = "safekey"
 version = "1.0.0"
 description = "SafeKey - Local Password Manager"
-authors = ["Dreadonyx"]
+authors = ["H3M4N1H"]
 edition = "2021"
 
 [lib]

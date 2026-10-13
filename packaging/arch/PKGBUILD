@@ -1,10 +1,10 @@
-# Maintainer: Dreadonyx <dreadonyx@proton.me>
+# Maintainer: H3M4N1H <dreadonyx@proton.me>
 pkgname=safekey
 pkgver=1.0.0
 pkgrel=1
 pkgdesc="SafeKey - Local-only encrypted password manager. No cloud, no syncing."
 arch=('x86_64')
-url="https://github.com/Dreadonyx/SafeKey"
+url="https://github.com/H3M4N1H/SafeKey"
 license=('MIT')
 depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3')
 optdepends=('xdg-utils: for opening URLs')

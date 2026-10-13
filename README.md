@@ -48,7 +48,7 @@ Every password manager wants you to trust their servers. I didn't want to. So I 
 
 **Desktop:**
 ```bash
-git clone https://github.com/Dreadonyx/SafeKey
+git clone https://github.com/H3M4N1H/SafeKey
 cd SafeKey
 cargo tauri dev
 ```

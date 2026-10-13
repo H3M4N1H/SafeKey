@@ -1,7 +1,7 @@
 {
   "productName": "SafeKey",
   "version": "1.0.0",
-  "identifier": "com.dreadonyx.safekey",
+  "identifier": "com.h3m4n1h.safekey",
   "build": {
     "frontendDist": "../web"
   },

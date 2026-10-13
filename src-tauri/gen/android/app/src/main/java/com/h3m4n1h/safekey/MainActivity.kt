@@ -1,4 +1,4 @@
-package com.dreadonyx.safekey
+package com.h3m4n1h.safekey
 
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge

@@ -15,11 +15,11 @@ val tauriProperties = Properties().apply {
 
 android {
     compileSdk = 36
-    namespace = "com.dreadonyx.safekey"
+    namespace = "com.h3m4n1h.safekey"
     ndkVersion = "27.0.12077973"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
-        applicationId = "com.dreadonyx.safekey"
+        applicationId = "com.h3m4n1h.safekey"
         minSdk = 24
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()

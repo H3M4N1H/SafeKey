@@ -89,7 +89,7 @@
                                 <span class="landing-btn-icon"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><line x1="12" y1="8" x2="12" y2="14"></line><line x1="9" y1="11" x2="15" y2="11"></line></svg></span>
                                 <span class="landing-btn-text">
                                     <strong>Generate a Vault</strong>
-                                    <small>Create a new encrypted vault with a master key</small>
+                                    <small id="generateVaultHint">Create a new encrypted vault with a master key</small>
                                 </span>
                             </button>
                             <button class="landing-btn" id="openVaultBtn">
@@ -119,10 +119,10 @@
                         </div>
                         <form id="setupForm" class="auth-form" autocomplete="off">
                             <div class="form-group">
-                                <label for="usernameSetup">Username</label>
+                                <label for="vaultNameSetup">Vault Name</label>
                                 <div class="input-wrapper">
-                                    <input type="text" id="usernameSetup" placeholder="Enter your username" required
-                                        autocomplete="off">
+                                    <input type="text" id="vaultNameSetup" placeholder="e.g. Personal, Work" required
+                                        maxlength="40" autocomplete="off">
                                 </div>
                             </div>
                             <div class="form-group">
@@ -165,17 +165,7 @@
                             <p>Enter your master key to access your passwords</p>
                         </div>
                         <form id="unlockForm" class="auth-form" autocomplete="off">
-                            <div class="remembered-user hidden" id="rememberedUser">
-                                <span class="remembered-user-avatar" id="rememberedUserAvatar"></span>
-                                <span class="remembered-user-name" id="rememberedUserName"></span>
-                            </div>
-                            <div class="form-group" id="usernameUnlockGroup">
-                                <label for="usernameUnlock">Username</label>
-                                <div class="input-wrapper">
-                                    <input type="text" id="usernameUnlock" placeholder="Enter your username" required
-                                        autocomplete="off">
-                                </div>
-                            </div>
+                            <div class="vault-picker" id="vaultPicker" role="radiogroup" aria-label="Vault"></div>
                             <div class="form-group">
                                 <label for="masterKeyUnlock">Master Key</label>
                                 <div class="input-wrapper">
@@ -184,8 +174,7 @@
                                     <button type="button" class="toggle-password"
                                         data-target="masterKeyUnlock"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>
                                 </div>
-                                <p class="error-message hidden" id="unlockError">Incorrect username or master key.
-                                    Please try again.</p>
+                                <p class="error-message hidden" id="unlockError">Incorrect master key. Please try again.</p>
                                 <p class="lockout-message hidden" id="lockoutMessage"></p>
                             </div>
                             <button type="submit" class="btn btn-primary btn-full" id="unlockSubmitBtn">Unlock</button>
@@ -773,7 +762,7 @@
             </div>
             <div class="warning-box" style="margin-bottom:var(--spacing-lg)">
                 <span class="warning-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg></span>
-                <p><strong>This will permanently erase all credentials, notes, attachments, and your recovery key.</strong> This action cannot be undone.</p>
+                <p><strong>This will permanently erase this vault's credentials, notes, attachments, and recovery key.</strong> Other vaults on this device are not affected. This action cannot be undone.</p>
             </div>
             <div class="form-group">
                 <label for="wipeConfirmInput">Type <strong>DELETE</strong> to confirm</label>

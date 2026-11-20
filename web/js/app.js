@@ -115,13 +115,10 @@ const App = (function () {
         elements.changeMasterKeyForm = document.getElementById('changeMasterKeyForm');
 
         elements.masterKeySetup = document.getElementById('masterKeySetup');
-        elements.usernameSetup = document.getElementById('usernameSetup');
+        elements.vaultNameSetup = document.getElementById('vaultNameSetup');
         elements.masterKeyConfirm = document.getElementById('masterKeyConfirm');
-        elements.usernameUnlock = document.getElementById('usernameUnlock');
-        elements.usernameUnlockGroup = document.getElementById('usernameUnlockGroup');
-        elements.rememberedUser = document.getElementById('rememberedUser');
-        elements.rememberedUserAvatar = document.getElementById('rememberedUserAvatar');
-        elements.rememberedUserName = document.getElementById('rememberedUserName');
+        elements.vaultPicker = document.getElementById('vaultPicker');
+        elements.generateVaultHint = document.getElementById('generateVaultHint');
         elements.masterKeyUnlock = document.getElementById('masterKeyUnlock');
         elements.vaultSearch = document.getElementById('vaultSearch');
         elements.analyzerInput = document.getElementById('analyzerInput');
@@ -242,15 +239,16 @@ const App = (function () {
 
     function bindEvents() {
         elements.generateVaultBtn.addEventListener('click', () => {
-            if (Vault.exists()) {
-                showToast('A vault already exists on this device. Unlock it, or wipe it in Settings before creating a new one.', 'warning');
+            if (!Vault.canCreateVault()) {
+                showToast(`This device already has ${Vault.MAX_VAULTS} vaults. Wipe one in Settings to make room.`, 'warning');
                 return;
             }
             showView('setup');
+            elements.vaultNameSetup.focus();
         });
         elements.openVaultBtn.addEventListener('click', showUnlockView);
-        elements.backFromSetup.addEventListener('click', () => showView('landing'));
-        elements.backFromUnlock.addEventListener('click', () => showView('landing'));
+        elements.backFromSetup.addEventListener('click', showEntryView);
+        elements.backFromUnlock.addEventListener('click', showLandingView);
 
         document.querySelectorAll('.nav-item').forEach(item => {
             item.addEventListener('click', () => {
@@ -535,24 +533,64 @@ const App = (function () {
         if (Vault.exists()) {
             showUnlockView();
         } else {
-            showView('landing');
+            showLandingView();
         }
     }
 
-    // The vault stores its username, so only ask for it when none is saved
+    function showLandingView() {
+        const count = Vault.listVaults().length;
+        elements.generateVaultHint.textContent = count === 0
+            ? 'Create a new encrypted vault with a master key'
+            : `Create another vault (${count} of ${Vault.MAX_VAULTS} used)`;
+        showView('landing');
+    }
+
+    // Vaults are picked by name, so only the master key has to be typed
+    function renderVaultPicker() {
+        const activeId = Vault.getActiveVaultId();
+        elements.vaultPicker.replaceChildren(...Vault.listVaults().map(vault => {
+            const option = document.createElement('button');
+            option.type = 'button';
+            option.className = 'vault-option';
+            option.setAttribute('role', 'radio');
+            option.setAttribute('aria-checked', String(vault.id === activeId));
+
+            const avatar = document.createElement('span');
+            avatar.className = 'vault-option-avatar';
+            avatar.textContent = vault.name.charAt(0).toUpperCase();
+            const name = document.createElement('span');
+            name.className = 'vault-option-name';
+            name.textContent = vault.name;
+            option.append(avatar, name);
+
+            option.addEventListener('click', () => {
+                if (vault.id === Vault.getActiveVaultId()) return;
+                Vault.selectVault(vault.id);
+                elements.masterKeyUnlock.value = '';
+                elements.unlockError.classList.add('hidden');
+                renderVaultPicker();
+                elements.masterKeyUnlock.focus();
+            });
+            return option;
+        }));
+    }
+
     function showUnlockView() {
-        const storedUsername = Vault.getUsername();
-        const remembered = Boolean(storedUsername);
-        elements.usernameUnlock.value = storedUsername || '';
-        elements.usernameUnlock.required = !remembered;
-        elements.usernameUnlockGroup.classList.toggle('hidden', remembered);
-        elements.rememberedUser.classList.toggle('hidden', !remembered);
-        if (remembered) {
-            elements.rememberedUserAvatar.textContent = storedUsername.charAt(0).toUpperCase();
-            elements.rememberedUserName.textContent = storedUsername;
-        }
+        renderVaultPicker();
         showView('unlock');
         elements.masterKeyUnlock.focus();
+    }
+
+    function setButtonBusy(button, label) {
+        button.disabled = true;
+        button.dataset.idleLabel = button.textContent;
+        button.innerHTML = '<span class="scan-spinner"></span> ';
+        button.append(label);
+    }
+
+    function setButtonIdle(button) {
+        button.disabled = false;
+        if (button.dataset.idleLabel) button.textContent = button.dataset.idleLabel;
     }
 
     // Shows a recovery key once; the vault opens after the user confirms they saved it
@@ -575,17 +613,20 @@ const App = (function () {
 
     async function handleSetup(e) {
         e.preventDefault();
-        const username = elements.usernameSetup.value.trim();
+        const vaultName = elements.vaultNameSetup.value.trim();
         const password = elements.masterKeySetup.value;
         const confirm = elements.masterKeyConfirm.value;
 
-        if (!username) return showToast('Username is required', 'error');
+        if (!vaultName) return showToast('Vault name is required', 'error');
+        if (Vault.isNameTaken(vaultName)) return showToast('A vault with this name already exists', 'error');
         if (password !== confirm) return showToast('Passwords do not match', 'error');
         if (password.length < 8) return showToast('Master key must be at least 8 characters', 'error');
-        if (Vault.exists()) return showToast('A vault already exists on this device', 'error');
+        if (!Vault.canCreateVault()) return showToast(`This device already has ${Vault.MAX_VAULTS} vaults`, 'error');
 
+        const submitBtn = elements.setupForm.querySelector('button[type="submit"]');
+        setButtonBusy(submitBtn, 'Creating vault…');
         try {
-            const result = await Vault.initialize(username, password);
+            const result = await Vault.initialize(vaultName, password);
             if (result.success) {
                 elements.setupForm.reset();
                 Session.start(result.key);
@@ -597,6 +638,8 @@ const App = (function () {
         } catch (error) {
             console.error('[App] Setup error:', error);
             showToast('An error occurred', 'error');
+        } finally {
+            setButtonIdle(submitBtn);
         }
     }
 
@@ -608,6 +651,8 @@ const App = (function () {
         if (newMasterKey.length < 8) return showToast('New master key must be at least 8 characters', 'error');
         if (newMasterKey !== elements.recoveryConfirmMasterKey.value) return showToast('New master keys do not match', 'error');
 
+        const submitBtn = elements.recoveryUnlockForm.querySelector('button[type="submit"]');
+        setButtonBusy(submitBtn, 'Recovering…');
         try {
             const result = await Vault.recoverWithKey(recoveryKey, newMasterKey);
             if (result.success) {
@@ -622,6 +667,8 @@ const App = (function () {
         } catch (error) {
             console.error('[App] Recovery error:', error);
             showToast('Recovery failed', 'error');
+        } finally {
+            setButtonIdle(submitBtn);
         }
     }
 
@@ -634,28 +681,18 @@ const App = (function () {
             return;
         }
 
-        const username = elements.usernameUnlock.value.trim();
         const password = elements.masterKeyUnlock.value;
+        if (!password) return;
 
-        if (!username) return showToast('Username is required', 'error');
-
-        const storedUsername = Vault.getUsername();
-        if (storedUsername && username !== storedUsername) {
-            elements.unlockError.classList.remove('hidden');
-            elements.masterKeyUnlock.value = '';
-            return;
-        }
-
-        // Show loading state while Argon2id hashes (can take ~1s)
-        elements.unlockSubmitBtn.textContent = 'Unlocking…';
-        elements.unlockSubmitBtn.disabled = true;
+        // Argon2id runs in a worker; show progress while it hashes
+        elements.unlockError.classList.add('hidden');
+        setButtonBusy(elements.unlockSubmitBtn, 'Unlocking…');
 
         try {
             const result = await Vault.unlock(password);
             if (result.success) {
                 Lockout.reset();
                 Session.start(result.key);
-                elements.usernameUnlock.value = '';
                 elements.masterKeyUnlock.value = '';
                 elements.unlockError.classList.add('hidden');
                 elements.lockoutMessage.classList.add('hidden');
@@ -1461,13 +1498,11 @@ const App = (function () {
         // Show which KDF this vault currently uses
         if (elements.kdfBadge) {
             try {
-                const saltRaw = localStorage.getItem('safekey_salt');
-                let kdf = 'pbkdf2';
-                if (saltRaw) {
-                    try { kdf = JSON.parse(saltRaw).kdf || 'pbkdf2'; } catch { kdf = 'pbkdf2'; }
-                }
-                if (kdf === Crypto.KDF.ARGON2ID) {
-                    elements.kdfBadge.textContent = 'Argon2id ✓';
+                const info = Vault.getKdfInfo();
+                if (info && info.kdf === Crypto.KDF.ARGON2ID) {
+                    elements.kdfBadge.textContent = info.params
+                        ? `Argon2id ✓ (${info.params.mem / 1024} MiB, ${info.params.time} passes)`
+                        : 'Argon2id ✓';
                     elements.kdfBadge.className = 'kdf-badge kdf-badge--argon2id';
                 } else {
                     elements.kdfBadge.textContent = 'PBKDF2 (legacy)';
@@ -1800,7 +1835,7 @@ const App = (function () {
         Session.destroy();
         elements.wipeConfirmModal.classList.add('hidden');
         closeSettingsModal();
-        showView('landing');
+        showEntryView();
         showToast('Vault destroyed permanently', 'info');
     }
 

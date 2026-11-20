@@ -112,6 +112,51 @@ const Crypto = (function() {
         return new TextDecoder().decode(bytes);
     }
 
+    let argon2Worker;
+    let argon2RequestId = 0;
+    const argon2Pending = new Map();
+
+    /**
+     * Lazily starts the Argon2 worker
+     * @returns {Worker|null} null when workers are unavailable
+     */
+    function getArgon2Worker() {
+        if (argon2Worker !== undefined) return argon2Worker;
+        try {
+            argon2Worker = new Worker('js/argon2-worker.js');
+            argon2Worker.onmessage = (event) => {
+                const request = argon2Pending.get(event.data.id);
+                if (!request) return;
+                argon2Pending.delete(event.data.id);
+                if (event.data.error) request.reject(new Error(event.data.error));
+                else request.resolve(event.data.hash);
+            };
+            argon2Worker.onerror = (event) => {
+                argon2Pending.forEach(request => request.reject(new Error(event.message || 'Argon2 worker error')));
+                argon2Pending.clear();
+            };
+        } catch {
+            argon2Worker = null;
+        }
+        return argon2Worker;
+    }
+
+    function hashInWorker(worker, password, salt, params) {
+        return new Promise((resolve, reject) => {
+            const id = ++argon2RequestId;
+            argon2Pending.set(id, { resolve, reject });
+            worker.postMessage({
+                id,
+                pass: password,
+                salt,
+                mem: params.mem,
+                time: params.time,
+                parallelism: params.parallelism,
+                hashLen: CONFIG.ARGON2_HASH_LEN
+            });
+        });
+    }
+
     /**
      * Derives raw key bytes using Argon2id.
      * Requires the argon2-browser WASM library to be loaded.
@@ -121,6 +166,17 @@ const Crypto = (function() {
      * @returns {Promise<Uint8Array>} 32 raw key bytes
      */
     async function deriveBytesArgon2id(password, salt, params) {
+        const worker = getArgon2Worker();
+        if (worker) {
+            try {
+                return await hashInWorker(worker, password, salt, params);
+            } catch (error) {
+                // Wrong passwords never reach here; only a broken worker does, so fall back to the page
+                console.error('[Crypto] Argon2 worker failed, hashing on the main thread:', error);
+                argon2Worker = null;
+            }
+        }
+
         if (typeof window.argon2 === 'undefined') {
             throw new Error('Argon2 WASM library not loaded');
         }

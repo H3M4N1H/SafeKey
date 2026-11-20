@@ -3,7 +3,7 @@
  * Enables offline use by caching all app assets.
  */
 
-const CACHE_NAME = 'safekey-v16';
+const CACHE_NAME = 'safekey-v17';
 const ASSETS = [
     '/',
     '/index.html',
@@ -21,6 +21,7 @@ const ASSETS = [
     '/js/analyzer.js',
     '/js/generator.js',
     '/js/totp.js',
+    '/js/argon2-worker.js',
     '/vendor/argon2-bundled.min.js',
     '/vendor/qrcode.js',
     '/fonts/inter-latin-300-normal.woff2',

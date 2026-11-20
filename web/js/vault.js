@@ -14,36 +14,145 @@
 const Vault = (function () {
     'use strict';
 
-    // Storage keys
-    const STORAGE_KEYS = {
-        VAULT_DATA: 'safekey_vault',
-        VAULT_SALT: 'safekey_salt',
-        VAULT_VERIFY: 'safekey_verify',
-        VAULT_USERNAME: 'safekey_username',
-        VAULT_NOTES: 'safekey_notes',
-        VAULT_RECOVERY: 'safekey_recovery',
-        VAULT_ATTACHMENTS: 'safekey_attachments',
-        GEN_PRESETS: 'safekey_gen_presets'
+    // Per-vault storage fields; each vault stores them as safekey_v_<vaultId>_<field>
+    const VAULT_FIELDS = {
+        VAULT_DATA: 'vault',
+        VAULT_SALT: 'salt',
+        VAULT_VERIFY: 'verify',
+        VAULT_NOTES: 'notes',
+        VAULT_RECOVERY: 'recovery',
+        VAULT_ATTACHMENTS: 'attachments'
     };
+
+    // Device-wide storage keys
+    const VAULTS_KEY = 'safekey_vaults';          // [{id, name}]
+    const LAST_VAULT_KEY = 'safekey_last_vault';
+    const GEN_PRESETS_KEY = 'safekey_gen_presets';
+
+    const MAX_VAULTS = 3;
 
     // Clipboard auto-clear timeout (30 seconds)
     const CLIPBOARD_TIMEOUT = 30000;
     let clipboardTimeoutId = null;
 
+    let activeVaultId = null;
+
     /**
-     * Checks if a vault exists (first run detection)
-     * @returns {boolean}
+     * Storage key of a field in a vault
+     * @param {string} field - a VAULT_FIELDS name
+     * @param {string} [vaultId] - defaults to the selected vault
+     * @returns {string}
      */
-    function exists() {
-        return localStorage.getItem(STORAGE_KEYS.VAULT_SALT) !== null;
+    function storageKey(field, vaultId = activeVaultId) {
+        if (!vaultId) throw new Error('No vault selected');
+        return `safekey_v_${vaultId}_${VAULT_FIELDS[field]}`;
     }
 
     /**
-     * Gets the stored username
+     * @returns {Array<{id: string, name: string}>} vaults on this device, oldest first
+     */
+    function listVaults() {
+        try {
+            const vaults = JSON.parse(localStorage.getItem(VAULTS_KEY) || '[]');
+            return Array.isArray(vaults)
+                ? vaults.filter(v => v && typeof v.id === 'string' && typeof v.name === 'string')
+                : [];
+        } catch {
+            return [];
+        }
+    }
+
+    function saveVaults(vaults) {
+        localStorage.setItem(VAULTS_KEY, JSON.stringify(vaults));
+    }
+
+    function newVaultId() {
+        return Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    /**
+     * Moves a vault stored by older versions (unprefixed keys, single vault) into the vault list
+     */
+    function migrateSingleVault() {
+        if (localStorage.getItem(VAULTS_KEY) !== null || localStorage.getItem('safekey_salt') === null) return;
+        const id = newVaultId();
+        Object.values(VAULT_FIELDS).forEach(field => {
+            const value = localStorage.getItem(`safekey_${field}`);
+            if (value !== null) localStorage.setItem(`safekey_v_${id}_${field}`, value);
+        });
+        saveVaults([{ id, name: localStorage.getItem('safekey_username') || 'My Vault' }]);
+        localStorage.setItem(LAST_VAULT_KEY, id);
+        Object.values(VAULT_FIELDS).forEach(field => localStorage.removeItem(`safekey_${field}`));
+        localStorage.removeItem('safekey_username');
+    }
+
+    /**
+     * Checks if any vault exists on this device (first run detection)
+     * @returns {boolean}
+     */
+    function exists() {
+        return listVaults().length > 0;
+    }
+
+    /**
+     * @returns {boolean} true if another vault can be created on this device
+     */
+    function canCreateVault() {
+        return listVaults().length < MAX_VAULTS;
+    }
+
+    /**
+     * @param {string} name
+     * @returns {boolean} true if a vault already uses this name (case-insensitive)
+     */
+    function isNameTaken(name) {
+        const wanted = name.trim().toLowerCase();
+        return listVaults().some(v => v.name.toLowerCase() === wanted);
+    }
+
+    /**
+     * Selects the vault that unlock and all data operations apply to
+     * @param {string} vaultId
+     * @returns {boolean}
+     */
+    function selectVault(vaultId) {
+        if (!listVaults().some(v => v.id === vaultId)) return false;
+        activeVaultId = vaultId;
+        localStorage.setItem(LAST_VAULT_KEY, vaultId);
+        return true;
+    }
+
+    /**
+     * @returns {string|null} id of the selected vault
+     */
+    function getActiveVaultId() {
+        return activeVaultId;
+    }
+
+    /**
+     * Gets the selected vault's name
      * @returns {string|null}
      */
-    function getUsername() {
-        return localStorage.getItem(STORAGE_KEYS.VAULT_USERNAME);
+    function getVaultName() {
+        const vault = listVaults().find(v => v.id === activeVaultId);
+        return vault ? vault.name : null;
+    }
+
+    /**
+     * Removes every stored field of a vault
+     * @param {string} vaultId
+     */
+    function removeVaultData(vaultId) {
+        Object.keys(VAULT_FIELDS).forEach(field => localStorage.removeItem(storageKey(field, vaultId)));
+    }
+
+    /**
+     * @returns {{kdf: string, params: Object|null}|null} KDF of the selected vault, for display
+     */
+    function getKdfInfo() {
+        if (!activeVaultId) return null;
+        const blob = readKeyBlob();
+        return blob ? { kdf: blob.kdf, params: blob.params || null } : null;
     }
 
     /**
@@ -52,7 +161,8 @@ const Vault = (function () {
      * @returns {Object|null}
      */
     function readKeyBlob() {
-        const raw = localStorage.getItem(STORAGE_KEYS.VAULT_SALT);
+        if (!activeVaultId) return null;
+        const raw = localStorage.getItem(storageKey('VAULT_SALT'));
         if (raw === null) return null;
         try {
             const parsed = JSON.parse(raw);
@@ -97,7 +207,7 @@ const Vault = (function () {
     async function verifyVaultKey(keyBytes) {
         const key = await Crypto.importAesKey(keyBytes);
         try {
-            const verifyData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_VERIFY));
+            const verifyData = JSON.parse(localStorage.getItem(storageKey('VAULT_VERIFY')));
             const verified = await Crypto.decrypt(verifyData.ciphertext, verifyData.iv, key);
             return verified === 'SAFEKEY_VERIFY_TOKEN' ? key : null;
         } catch {
@@ -143,7 +253,7 @@ const Vault = (function () {
      */
     function legacyRecoveryMatches(blob) {
         try {
-            const recovery = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_RECOVERY));
+            const recovery = JSON.parse(localStorage.getItem(storageKey('VAULT_RECOVERY')));
             return Boolean(recovery) && blob.kdf === Crypto.KDF.ARGON2ID && recovery.vaultSalt === blob.salt;
         } catch {
             return false;
@@ -160,7 +270,7 @@ const Vault = (function () {
         const recoverySalt = Crypto.generateSalt();
         const recoveryDerivedKey = await Crypto.deriveKey(recoveryKey, recoverySalt, Crypto.KDF.ARGON2ID);
         const encrypted = await Crypto.encrypt(Crypto.arrayBufferToBase64(keyBytes), recoveryDerivedKey);
-        localStorage.setItem(STORAGE_KEYS.VAULT_RECOVERY, JSON.stringify({
+        localStorage.setItem(storageKey('VAULT_RECOVERY'), JSON.stringify({
             salt: Crypto.arrayBufferToBase64(recoverySalt),
             ciphertext: encrypted.ciphertext,
             iv: encrypted.iv
@@ -169,15 +279,22 @@ const Vault = (function () {
     }
 
     /**
-     * Initializes a new vault with master key. Refuses to overwrite an existing vault.
-     * @param {string} username
+     * Creates a new vault and selects it. Never touches existing vaults.
+     * @param {string} name - vault name shown in the vault picker
      * @param {string} masterPassword
      * @returns {Promise<{success: boolean, key?: CryptoKey, recoveryKey?: string, error?: string}>}
      */
-    async function initialize(username, masterPassword) {
-        if (exists()) {
-            return { success: false, error: 'A vault already exists on this device' };
+    async function initialize(name, masterPassword) {
+        name = name.trim();
+        if (!canCreateVault()) {
+            return { success: false, error: `This device already has ${MAX_VAULTS} vaults` };
         }
+        if (isNameTaken(name)) {
+            return { success: false, error: 'A vault with this name already exists' };
+        }
+        const previousVaultId = activeVaultId;
+        const vaultId = newVaultId();
+        activeVaultId = vaultId;
         try {
             // Random vault key; the master key and recovery key each wrap it
             const keyBytes = Crypto.generateRandomBytes(32);
@@ -185,19 +302,23 @@ const Vault = (function () {
             const verifyData = await Crypto.encrypt('SAFEKEY_VERIFY_TOKEN', key);
             const keyBlob = await buildKeyBlob(keyBytes, masterPassword);
 
-            localStorage.setItem(STORAGE_KEYS.VAULT_VERIFY,   JSON.stringify(verifyData));
-            localStorage.setItem(STORAGE_KEYS.VAULT_USERNAME, username);
-            localStorage.setItem(STORAGE_KEYS.VAULT_DATA, JSON.stringify([]));
-            localStorage.setItem(STORAGE_KEYS.VAULT_NOTES, JSON.stringify([]));
-            localStorage.setItem(STORAGE_KEYS.VAULT_ATTACHMENTS, JSON.stringify([]));
+            localStorage.setItem(storageKey('VAULT_VERIFY'), JSON.stringify(verifyData));
+            localStorage.setItem(storageKey('VAULT_DATA'), JSON.stringify([]));
+            localStorage.setItem(storageKey('VAULT_NOTES'), JSON.stringify([]));
+            localStorage.setItem(storageKey('VAULT_ATTACHMENTS'), JSON.stringify([]));
             const recoveryKey = await createRecovery(keyBytes);
-            // Written last: exists() only reports a vault once everything else is in place
-            localStorage.setItem(STORAGE_KEYS.VAULT_SALT, keyBlob);
+            localStorage.setItem(storageKey('VAULT_SALT'), keyBlob);
             keyBytes.fill(0);
+
+            // Listed last: the vault only appears once all its data is in place
+            saveVaults([...listVaults(), { id: vaultId, name }]);
+            selectVault(vaultId);
 
             return { success: true, key, kdf: Crypto.KDF.ARGON2ID, recoveryKey };
         } catch (error) {
             console.error('[Vault] Initialization failed:', error);
+            removeVaultData(vaultId);
+            activeVaultId = previousVaultId;
             return { success: false, error: 'Failed to create vault' };
         }
     }
@@ -227,7 +348,7 @@ const Vault = (function () {
      */
     async function recoverWithKey(recoveryKey, newMasterPassword) {
         try {
-            const recoveryDataStr = localStorage.getItem(STORAGE_KEYS.VAULT_RECOVERY);
+            const recoveryDataStr = localStorage.getItem(storageKey('VAULT_RECOVERY'));
             if (!recoveryDataStr) {
                 return { success: false, error: 'No recovery data found' };
             }
@@ -251,7 +372,7 @@ const Vault = (function () {
             }
 
             if (newMasterPassword) {
-                localStorage.setItem(STORAGE_KEYS.VAULT_SALT, await buildKeyBlob(keyBytes, newMasterPassword));
+                localStorage.setItem(storageKey('VAULT_SALT'), await buildKeyBlob(keyBytes, newMasterPassword));
             }
             keyBytes.fill(0);
             return { success: true, key };
@@ -283,7 +404,7 @@ const Vault = (function () {
                 if (!blob.wrappedKey && !legacyRecoveryMatches(blob)) {
                     recoveryKey = await createRecovery(keyBytes);
                 }
-                localStorage.setItem(STORAGE_KEYS.VAULT_SALT, await buildKeyBlob(keyBytes, masterPassword));
+                localStorage.setItem(storageKey('VAULT_SALT'), await buildKeyBlob(keyBytes, masterPassword));
             }
             keyBytes.fill(0);
 
@@ -304,7 +425,7 @@ const Vault = (function () {
             throw new Error('Vault is locked');
         }
 
-        const encryptedData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_DATA) || '[]');
+        const encryptedData = JSON.parse(localStorage.getItem(storageKey('VAULT_DATA')) || '[]');
         const decryptedCredentials = [];
 
         for (const entry of encryptedData) {
@@ -365,13 +486,13 @@ const Vault = (function () {
         const encrypted = await Crypto.encrypt(JSON.stringify(credentialData), key);
 
         // Store encrypted entry
-        const encryptedData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_DATA) || '[]');
+        const encryptedData = JSON.parse(localStorage.getItem(storageKey('VAULT_DATA')) || '[]');
         encryptedData.push({
             id,
             data: encrypted.ciphertext,
             iv: encrypted.iv
         });
-        localStorage.setItem(STORAGE_KEYS.VAULT_DATA, JSON.stringify(encryptedData));
+        localStorage.setItem(storageKey('VAULT_DATA'), JSON.stringify(encryptedData));
 
         return { id, ...credentialData };
     }
@@ -419,7 +540,7 @@ const Vault = (function () {
         const encrypted = await Crypto.encrypt(JSON.stringify(updatedCredential), key);
 
         // Update storage
-        const encryptedData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_DATA) || '[]');
+        const encryptedData = JSON.parse(localStorage.getItem(storageKey('VAULT_DATA')) || '[]');
         const index = encryptedData.findIndex(e => e.id === id);
         if (index !== -1) {
             encryptedData[index] = {
@@ -427,7 +548,7 @@ const Vault = (function () {
                 data: encrypted.ciphertext,
                 iv: encrypted.iv
             };
-            localStorage.setItem(STORAGE_KEYS.VAULT_DATA, JSON.stringify(encryptedData));
+            localStorage.setItem(storageKey('VAULT_DATA'), JSON.stringify(encryptedData));
         }
 
         return { id, ...updatedCredential };
@@ -439,11 +560,11 @@ const Vault = (function () {
      * @returns {Promise<boolean>}
      */
     async function remove(id) {
-        const encryptedData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_DATA) || '[]');
+        const encryptedData = JSON.parse(localStorage.getItem(storageKey('VAULT_DATA')) || '[]');
         const filtered = encryptedData.filter(e => e.id !== id);
 
         if (filtered.length !== encryptedData.length) {
-            localStorage.setItem(STORAGE_KEYS.VAULT_DATA, JSON.stringify(filtered));
+            localStorage.setItem(storageKey('VAULT_DATA'), JSON.stringify(filtered));
             return true;
         }
         return false;
@@ -514,13 +635,13 @@ const Vault = (function () {
         return JSON.stringify({
             format: 'safekey-vault',
             version: 2,
-            username: getUsername(),
-            salt: localStorage.getItem(STORAGE_KEYS.VAULT_SALT),
-            verify: localStorage.getItem(STORAGE_KEYS.VAULT_VERIFY),
-            data: localStorage.getItem(STORAGE_KEYS.VAULT_DATA),
-            notes: localStorage.getItem(STORAGE_KEYS.VAULT_NOTES) || '[]',
-            attachments: includeAttachments ? (localStorage.getItem(STORAGE_KEYS.VAULT_ATTACHMENTS) || '[]') : '[]',
-            recovery: localStorage.getItem(STORAGE_KEYS.VAULT_RECOVERY)
+            name: getVaultName(),
+            salt: localStorage.getItem(storageKey('VAULT_SALT')),
+            verify: localStorage.getItem(storageKey('VAULT_VERIFY')),
+            data: localStorage.getItem(storageKey('VAULT_DATA')),
+            notes: localStorage.getItem(storageKey('VAULT_NOTES')) || '[]',
+            attachments: includeAttachments ? (localStorage.getItem(storageKey('VAULT_ATTACHMENTS')) || '[]') : '[]',
+            recovery: localStorage.getItem(storageKey('VAULT_RECOVERY'))
         });
     }
 
@@ -542,7 +663,7 @@ const Vault = (function () {
     }
 
     /**
-     * Imports vault data, replacing the vault on this device
+     * Imports vault data, replacing the selected vault
      * @param {string} exportedData
      * @returns {boolean}
      */
@@ -568,18 +689,26 @@ const Vault = (function () {
                 throw new Error('Invalid recovery data');
             }
 
-            localStorage.setItem(STORAGE_KEYS.VAULT_SALT, data.salt);
-            localStorage.setItem(STORAGE_KEYS.VAULT_VERIFY, data.verify);
-            localStorage.setItem(STORAGE_KEYS.VAULT_DATA, data.data);
-            localStorage.setItem(STORAGE_KEYS.VAULT_NOTES, notes);
-            localStorage.setItem(STORAGE_KEYS.VAULT_ATTACHMENTS, attachments);
+            localStorage.setItem(storageKey('VAULT_SALT'), data.salt);
+            localStorage.setItem(storageKey('VAULT_VERIFY'), data.verify);
+            localStorage.setItem(storageKey('VAULT_DATA'), data.data);
+            localStorage.setItem(storageKey('VAULT_NOTES'), notes);
+            localStorage.setItem(storageKey('VAULT_ATTACHMENTS'), attachments);
             if (recovery !== null) {
-                localStorage.setItem(STORAGE_KEYS.VAULT_RECOVERY, recovery);
+                localStorage.setItem(storageKey('VAULT_RECOVERY'), recovery);
             } else {
-                localStorage.removeItem(STORAGE_KEYS.VAULT_RECOVERY);
+                localStorage.removeItem(storageKey('VAULT_RECOVERY'));
             }
-            if (typeof data.username === 'string' && data.username.trim()) {
-                localStorage.setItem(STORAGE_KEYS.VAULT_USERNAME, data.username.trim());
+            // Backups from older versions carry the name as username
+            const importedName = typeof data.name === 'string' ? data.name : data.username;
+            if (typeof importedName === 'string' && importedName.trim()) {
+                const vaults = listVaults();
+                const current = vaults.find(v => v.id === activeVaultId);
+                const taken = vaults.some(v => v.id !== activeVaultId && v.name.toLowerCase() === importedName.trim().toLowerCase());
+                if (current && !taken) {
+                    current.name = importedName.trim();
+                    saveVaults(vaults);
+                }
             }
             return true;
         } catch (e) {
@@ -608,7 +737,7 @@ const Vault = (function () {
             if (!blob.wrappedKey && !legacyRecoveryMatches(blob)) {
                 recoveryKey = await createRecovery(keyBytes);
             }
-            localStorage.setItem(STORAGE_KEYS.VAULT_SALT, await buildKeyBlob(keyBytes, newPassword));
+            localStorage.setItem(storageKey('VAULT_SALT'), await buildKeyBlob(keyBytes, newPassword));
             keyBytes.fill(0);
 
             return { success: true, key, kdf: Crypto.KDF.ARGON2ID, recoveryKey };
@@ -628,7 +757,7 @@ const Vault = (function () {
         const key = Session.getKey();
         if (!key) throw new Error('Vault is locked');
 
-        const encryptedData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_NOTES) || '[]');
+        const encryptedData = JSON.parse(localStorage.getItem(storageKey('VAULT_NOTES')) || '[]');
         const decryptedNotes = [];
 
         for (const entry of encryptedData) {
@@ -671,9 +800,9 @@ const Vault = (function () {
         };
 
         const encrypted = await Crypto.encrypt(JSON.stringify(noteData), key);
-        const encryptedData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_NOTES) || '[]');
+        const encryptedData = JSON.parse(localStorage.getItem(storageKey('VAULT_NOTES')) || '[]');
         encryptedData.push({ id, data: encrypted.ciphertext, iv: encrypted.iv });
-        localStorage.setItem(STORAGE_KEYS.VAULT_NOTES, JSON.stringify(encryptedData));
+        localStorage.setItem(storageKey('VAULT_NOTES'), JSON.stringify(encryptedData));
 
         return { id, ...noteData };
     }
@@ -695,11 +824,11 @@ const Vault = (function () {
         delete updatedNote.id;
 
         const encrypted = await Crypto.encrypt(JSON.stringify(updatedNote), key);
-        const encryptedData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_NOTES) || '[]');
+        const encryptedData = JSON.parse(localStorage.getItem(storageKey('VAULT_NOTES')) || '[]');
         const index = encryptedData.findIndex(e => e.id === id);
         if (index !== -1) {
             encryptedData[index] = { id, data: encrypted.ciphertext, iv: encrypted.iv };
-            localStorage.setItem(STORAGE_KEYS.VAULT_NOTES, JSON.stringify(encryptedData));
+            localStorage.setItem(storageKey('VAULT_NOTES'), JSON.stringify(encryptedData));
         }
 
         return { id, ...updatedNote };
@@ -711,10 +840,10 @@ const Vault = (function () {
      * @returns {Promise<boolean>}
      */
     async function removeNote(id) {
-        const encryptedData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_NOTES) || '[]');
+        const encryptedData = JSON.parse(localStorage.getItem(storageKey('VAULT_NOTES')) || '[]');
         const filtered = encryptedData.filter(e => e.id !== id);
         if (filtered.length !== encryptedData.length) {
-            localStorage.setItem(STORAGE_KEYS.VAULT_NOTES, JSON.stringify(filtered));
+            localStorage.setItem(storageKey('VAULT_NOTES'), JSON.stringify(filtered));
             return true;
         }
         return false;
@@ -725,7 +854,7 @@ const Vault = (function () {
     async function getAllAttachments() {
         const key = Session.getKey();
         if (!key) throw new Error('Vault is locked');
-        const encryptedData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_ATTACHMENTS) || '[]');
+        const encryptedData = JSON.parse(localStorage.getItem(storageKey('VAULT_ATTACHMENTS')) || '[]');
         const decrypted = [];
         for (const entry of encryptedData) {
             try {
@@ -755,17 +884,17 @@ const Vault = (function () {
             createdAt: Date.now()
         };
         const encrypted = await Crypto.encrypt(JSON.stringify(attData), key);
-        const encryptedData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_ATTACHMENTS) || '[]');
+        const encryptedData = JSON.parse(localStorage.getItem(storageKey('VAULT_ATTACHMENTS')) || '[]');
         encryptedData.push({ id, data: encrypted.ciphertext, iv: encrypted.iv });
-        localStorage.setItem(STORAGE_KEYS.VAULT_ATTACHMENTS, JSON.stringify(encryptedData));
+        localStorage.setItem(storageKey('VAULT_ATTACHMENTS'), JSON.stringify(encryptedData));
         return { id, ...attData };
     }
 
     async function removeAttachment(id) {
-        const encryptedData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_ATTACHMENTS) || '[]');
+        const encryptedData = JSON.parse(localStorage.getItem(storageKey('VAULT_ATTACHMENTS')) || '[]');
         const filtered = encryptedData.filter(e => e.id !== id);
         if (filtered.length !== encryptedData.length) {
-            localStorage.setItem(STORAGE_KEYS.VAULT_ATTACHMENTS, JSON.stringify(filtered));
+            localStorage.setItem(storageKey('VAULT_ATTACHMENTS'), JSON.stringify(filtered));
             return true;
         }
         return false;
@@ -773,18 +902,25 @@ const Vault = (function () {
 
     // ─── Vault Wipe ──────────────────────────────────────────────────────────
 
+    /**
+     * Permanently deletes the selected vault; other vaults on the device are untouched
+     */
     function wipeVault() {
-        Object.values(STORAGE_KEYS).forEach(k => localStorage.removeItem(k));
-        localStorage.removeItem('safekey_lockout');
-        localStorage.removeItem('safekey_theme');
-        localStorage.removeItem('safekey_sort');
-        console.log('[Vault] All vault data wiped');
+        if (!activeVaultId) return;
+        const vaultId = activeVaultId;
+        saveVaults(listVaults().filter(v => v.id !== vaultId));
+        removeVaultData(vaultId);
+        const remaining = listVaults();
+        activeVaultId = null;
+        if (remaining.length) selectVault(remaining[0].id);
+        else localStorage.removeItem(LAST_VAULT_KEY);
+        console.log('[Vault] Vault wiped');
     }
 
     // ─── Generator Presets ───────────────────────────────────────────────────
 
     function getGenPresets() {
-        try { return JSON.parse(localStorage.getItem(STORAGE_KEYS.GEN_PRESETS) || '[]'); }
+        try { return JSON.parse(localStorage.getItem(GEN_PRESETS_KEY) || '[]'); }
         catch { return []; }
     }
 
@@ -792,18 +928,34 @@ const Vault = (function () {
         const presets = getGenPresets();
         preset.id = Date.now().toString(36);
         presets.push(preset);
-        localStorage.setItem(STORAGE_KEYS.GEN_PRESETS, JSON.stringify(presets));
+        localStorage.setItem(GEN_PRESETS_KEY, JSON.stringify(presets));
         return preset;
     }
 
     function deleteGenPreset(id) {
         const presets = getGenPresets().filter(p => p.id !== id);
-        localStorage.setItem(STORAGE_KEYS.GEN_PRESETS, JSON.stringify(presets));
+        localStorage.setItem(GEN_PRESETS_KEY, JSON.stringify(presets));
+    }
+
+    // Start with the most recently used vault selected
+    migrateSingleVault();
+    {
+        const vaults = listVaults();
+        const last = localStorage.getItem(LAST_VAULT_KEY);
+        if (vaults.length) selectVault(vaults.some(v => v.id === last) ? last : vaults[0].id);
     }
 
     // Public API
     return {
+        MAX_VAULTS,
         exists,
+        canCreateVault,
+        isNameTaken,
+        listVaults,
+        selectVault,
+        getActiveVaultId,
+        getVaultName,
+        getKdfInfo,
         initialize,
         unlock,
         recoverWithKey,
@@ -816,7 +968,6 @@ const Vault = (function () {
         copyToClipboard,
         exportVault,
         importVault,
-        getUsername,
         changeMasterKey,
         getAllNotes,
         getNoteById,

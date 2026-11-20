@@ -597,15 +597,31 @@ body {
     color: var(--text-secondary);
 }
 
-.remembered-user {
+.vault-picker {
+    display: flex; flex-direction: column; gap: var(--spacing-sm);
+}
+
+.vault-option {
     display: flex; align-items: center; gap: var(--spacing-sm);
+    width: 100%;
     background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     padding: var(--spacing-sm) var(--spacing-md);
+    color: var(--text-secondary);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color var(--transition), background var(--transition), color var(--transition);
 }
 
-.remembered-user-avatar {
+.vault-option[aria-checked="true"] {
+    border-color: var(--border-accent);
+    background: var(--accent-dim);
+    color: var(--text-primary);
+}
+
+.vault-option-avatar {
     display: flex; align-items: center; justify-content: center;
     flex-shrink: 0;
     width: 32px; height: 32px;
@@ -616,8 +632,7 @@ body {
     font-weight: 600;
 }
 
-.remembered-user-name {
-    color: var(--text-primary);
+.vault-option-name {
     font-weight: 500;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }

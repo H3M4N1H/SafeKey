@@ -86,6 +86,6 @@ jobs:
           test -n "$apk"
           tag="branding-${GITHUB_SHA:0:7}"
           gh release create "$tag" "$apk#SafeKey-Android.apk" \
-            --title "SafeKey Android - 2D logo (${GITHUB_SHA:0:7})" \
-            --notes "Automated Android APK build with updated SafeKey 2D branding. Check signing before installing over an existing version." \
+            --title "SafeKey Android (${GITHUB_SHA:0:7})" \
+            --notes "Automated Android APK build with updated SafeKey branding. Check signing before installing over an existing version." \
             --prerelease --target "$GITHUB_SHA"

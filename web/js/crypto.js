@@ -8,9 +8,10 @@
  * - Cryptographically secure random generation
  *
  * KDF selection:
- *   New vaults always use Argon2id (memory=65536 KiB, t=3, p=1).
- *   Old PBKDF2 vaults are unlocked via the legacy path and can be
- *   upgraded to Argon2id through Settings → Change Master Key.
+ *   The master key derives a key-encryption key with Argon2id
+ *   (ARGON2_PARAMS, stored per vault so they can be raised later).
+ *   Older vaults (Argon2id at LEGACY_ARGON2_PARAMS, or PBKDF2) are
+ *   migrated automatically on their next unlock.
  */
 
 const Crypto = (function() {
@@ -18,10 +19,6 @@ const Crypto = (function() {
 
     // Configuration
     const CONFIG = {
-        // Argon2id parameters (OWASP recommended minimums)
-        ARGON2_MEMORY:     65536,   // 64 MiB
-        ARGON2_TIME:       3,       // iterations
-        ARGON2_PARALLELISM:1,
         ARGON2_HASH_LEN:   32,      // 256-bit output
         // Legacy PBKDF2
         PBKDF2_ITERATIONS: 600000,
@@ -37,6 +34,12 @@ const Crypto = (function() {
         ARGON2ID: 'argon2id',
         PBKDF2:   'pbkdf2'
     };
+
+    // Argon2id cost for master keys: 128 MiB, 4 passes (~2.7x the legacy cost)
+    const ARGON2_PARAMS = Object.freeze({ mem: 131072, time: 4, parallelism: 1 });
+
+    // Cost used by vaults created before ARGON2_PARAMS existed, and by recovery keys
+    const LEGACY_ARGON2_PARAMS = Object.freeze({ mem: 65536, time: 3, parallelism: 1 });
 
     /**
      * Generates cryptographically secure random bytes
@@ -110,36 +113,70 @@ const Crypto = (function() {
     }
 
     /**
-     * Derives a key using Argon2id (memory-hard, default for new vaults).
+     * Derives raw key bytes using Argon2id.
      * Requires the argon2-browser WASM library to be loaded.
-     * @param {string} masterPassword
+     * @param {string} password
      * @param {Uint8Array} salt
-     * @returns {Promise<CryptoKey>} AES-GCM key
+     * @param {{mem: number, time: number, parallelism: number}} params
+     * @returns {Promise<Uint8Array>} 32 raw key bytes
      */
-    async function deriveKeyArgon2id(masterPassword, salt) {
+    async function deriveBytesArgon2id(password, salt, params) {
         if (typeof window.argon2 === 'undefined') {
             throw new Error('Argon2 WASM library not loaded');
         }
 
         const result = await window.argon2.hash({
-            pass:   masterPassword,
+            pass:   password,
             salt:   salt,
             type:   window.argon2.ArgonType.Argon2id,
-            mem:    CONFIG.ARGON2_MEMORY,
-            time:   CONFIG.ARGON2_TIME,
-            parallelism: CONFIG.ARGON2_PARALLELISM,
+            mem:    params.mem,
+            time:   params.time,
+            parallelism: params.parallelism,
             hashLen: CONFIG.ARGON2_HASH_LEN,
             distrib: false  // Don't split into workers (keep deterministic)
         });
+        return result.hash;
+    }
 
-        // Import the raw 32-byte hash as an AES-GCM key
-        return crypto.subtle.importKey(
-            'raw',
-            result.hash,
-            { name: 'AES-GCM', length: 256 },
-            false,
-            ['encrypt', 'decrypt']
+    /**
+     * Derives raw key bytes using legacy PBKDF2 (for migrating old vaults only).
+     * Matches the key deriveKeyPBKDF2 produces for the same inputs.
+     * @param {string} masterPassword
+     * @param {Uint8Array} salt
+     * @returns {Promise<Uint8Array>} 32 raw key bytes
+     */
+    async function deriveBytesPBKDF2(masterPassword, salt) {
+        const keyMaterial = await crypto.subtle.importKey(
+            'raw', stringToBytes(masterPassword), 'PBKDF2', false, ['deriveBits']
         );
+        const bits = await crypto.subtle.deriveBits(
+            { name: 'PBKDF2', salt, iterations: CONFIG.PBKDF2_ITERATIONS, hash: CONFIG.HASH_ALGORITHM },
+            keyMaterial,
+            CONFIG.KEY_LENGTH
+        );
+        return new Uint8Array(bits);
+    }
+
+    /**
+     * Imports raw key bytes as a non-extractable AES-256-GCM key
+     * @param {Uint8Array} bytes
+     * @returns {Promise<CryptoKey>}
+     */
+    function importAesKey(bytes) {
+        return crypto.subtle.importKey(
+            'raw', bytes, { name: 'AES-GCM', length: CONFIG.KEY_LENGTH }, false, ['encrypt', 'decrypt']
+        );
+    }
+
+    /**
+     * Derives a key using Argon2id (memory-hard).
+     * @param {string} masterPassword
+     * @param {Uint8Array} salt
+     * @param {{mem: number, time: number, parallelism: number}} [params=LEGACY_ARGON2_PARAMS]
+     * @returns {Promise<CryptoKey>} AES-GCM key
+     */
+    async function deriveKeyArgon2id(masterPassword, salt, params = LEGACY_ARGON2_PARAMS) {
+        return importAesKey(await deriveBytesArgon2id(masterPassword, salt, params));
     }
 
     /**
@@ -246,7 +283,13 @@ const Crypto = (function() {
     // Public API
     return {
         KDF,
+        ARGON2_PARAMS,
+        LEGACY_ARGON2_PARAMS,
         generateSalt,
+        generateRandomBytes,
+        deriveBytesArgon2id,
+        deriveBytesPBKDF2,
+        importAesKey,
         generateIV,
         deriveKey,
         deriveKeyArgon2id,

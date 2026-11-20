@@ -47,60 +47,158 @@ const Vault = (function () {
     }
 
     /**
-     * Initializes a new vault with master key
+     * Reads the stored key blob. Current vaults store the Argon2id params and the
+     * vault key wrapped by the master key; older vaults store only a salt (and KDF).
+     * @returns {Object|null}
+     */
+    function readKeyBlob() {
+        const raw = localStorage.getItem(STORAGE_KEYS.VAULT_SALT);
+        if (raw === null) return null;
+        try {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+                return { ...parsed, kdf: parsed.kdf || Crypto.KDF.PBKDF2 };
+            }
+        } catch {
+            // Legacy vault: raw base64 salt (PBKDF2)
+        }
+        return { salt: raw, kdf: Crypto.KDF.PBKDF2 };
+    }
+
+    /**
+     * Derives the raw vault key from the master password.
+     * @param {string} masterPassword
+     * @param {Object} blob - from readKeyBlob()
+     * @returns {Promise<Uint8Array|null>} vault key bytes, or null if the password is wrong
+     */
+    async function openVaultKey(masterPassword, blob) {
+        const salt = Crypto.base64ToArrayBuffer(blob.salt);
+        if (blob.wrappedKey) {
+            const kek = await Crypto.deriveKeyArgon2id(masterPassword, salt, blob.params);
+            try {
+                const keyBase64 = await Crypto.decrypt(blob.wrappedKey.ciphertext, blob.wrappedKey.iv, kek);
+                return Crypto.base64ToArrayBuffer(keyBase64);
+            } catch {
+                return null;
+            }
+        }
+        // Legacy vaults encrypted their data directly with the password-derived key
+        if (blob.kdf === Crypto.KDF.PBKDF2) {
+            return Crypto.deriveBytesPBKDF2(masterPassword, salt);
+        }
+        return Crypto.deriveBytesArgon2id(masterPassword, salt, Crypto.LEGACY_ARGON2_PARAMS);
+    }
+
+    /**
+     * Checks raw vault key bytes against the stored verification token
+     * @param {Uint8Array} keyBytes
+     * @returns {Promise<CryptoKey|null>} the vault key, or null if it does not match
+     */
+    async function verifyVaultKey(keyBytes) {
+        const key = await Crypto.importAesKey(keyBytes);
+        try {
+            const verifyData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_VERIFY));
+            const verified = await Crypto.decrypt(verifyData.ciphertext, verifyData.iv, key);
+            return verified === 'SAFEKEY_VERIFY_TOKEN' ? key : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Wraps the vault key under a key derived from the master password at the current Argon2id cost
+     * @param {Uint8Array} keyBytes
+     * @param {string} masterPassword
+     * @returns {Promise<string>} key blob to store under VAULT_SALT
+     */
+    async function buildKeyBlob(keyBytes, masterPassword) {
+        const salt = Crypto.generateSalt();
+        const params = { ...Crypto.ARGON2_PARAMS };
+        const kek = await Crypto.deriveKeyArgon2id(masterPassword, salt, params);
+        const wrappedKey = await Crypto.encrypt(Crypto.arrayBufferToBase64(keyBytes), kek);
+        return JSON.stringify({
+            v: 2,
+            kdf: Crypto.KDF.ARGON2ID,
+            salt: Crypto.arrayBufferToBase64(salt),
+            params,
+            wrappedKey
+        });
+    }
+
+    /**
+     * @param {Object} blob - from readKeyBlob()
+     * @returns {boolean} true if the vault already uses a wrapped key at the current Argon2id cost
+     */
+    function usesCurrentKdf(blob) {
+        const params = blob.params;
+        const current = Crypto.ARGON2_PARAMS;
+        return Boolean(blob.wrappedKey && params && params.mem >= current.mem && params.time >= current.time);
+    }
+
+    /**
+     * Legacy recovery data wrapped the password-derived key, so it only still
+     * matches the vault if the master key was never changed after it was made.
+     * @param {Object} blob - from readKeyBlob()
+     * @returns {boolean}
+     */
+    function legacyRecoveryMatches(blob) {
+        try {
+            const recovery = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_RECOVERY));
+            return Boolean(recovery) && blob.kdf === Crypto.KDF.ARGON2ID && recovery.vaultSalt === blob.salt;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Creates and stores a new recovery key for the vault key
+     * @param {Uint8Array} keyBytes
+     * @returns {Promise<string>} the recovery key, to show the user once
+     */
+    async function createRecovery(keyBytes) {
+        const recoveryKey = generateRecoveryKey();
+        const recoverySalt = Crypto.generateSalt();
+        const recoveryDerivedKey = await Crypto.deriveKey(recoveryKey, recoverySalt, Crypto.KDF.ARGON2ID);
+        const encrypted = await Crypto.encrypt(Crypto.arrayBufferToBase64(keyBytes), recoveryDerivedKey);
+        localStorage.setItem(STORAGE_KEYS.VAULT_RECOVERY, JSON.stringify({
+            salt: Crypto.arrayBufferToBase64(recoverySalt),
+            ciphertext: encrypted.ciphertext,
+            iv: encrypted.iv
+        }));
+        return recoveryKey;
+    }
+
+    /**
+     * Initializes a new vault with master key. Refuses to overwrite an existing vault.
      * @param {string} username
      * @param {string} masterPassword
-     * @returns {Promise<{success: boolean, key: CryptoKey, salt: Uint8Array}>}
+     * @returns {Promise<{success: boolean, key?: CryptoKey, recoveryKey?: string, error?: string}>}
      */
     async function initialize(username, masterPassword) {
+        if (exists()) {
+            return { success: false, error: 'A vault already exists on this device' };
+        }
         try {
-            const salt = Crypto.generateSalt();
-
-            // Always derive with Argon2id for new vaults
-            // Use raw hash bytes so we can import both extractable (for recovery) and non-extractable (for vault ops)
-            const argonResult = await window.argon2.hash({
-                pass: masterPassword, salt: salt,
-                type: window.argon2.ArgonType.Argon2id,
-                mem: 65536, time: 3, parallelism: 1, hashLen: 32, distrib: false
-            });
-            const rawKeyBytes = argonResult.hash;
-
-            // Non-extractable key for vault encryption
-            const key = await crypto.subtle.importKey('raw', rawKeyBytes,
-                { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-
+            // Random vault key; the master key and recovery key each wrap it
+            const keyBytes = Crypto.generateRandomBytes(32);
+            const key = await Crypto.importAesKey(keyBytes);
             const verifyData = await Crypto.encrypt('SAFEKEY_VERIFY_TOKEN', key);
+            const keyBlob = await buildKeyBlob(keyBytes, masterPassword);
 
-            // Store salt + KDF type together as JSON
-            const saltBlob = JSON.stringify({
-                salt: Crypto.arrayBufferToBase64(salt),
-                kdf:  Crypto.KDF.ARGON2ID
-            });
-            localStorage.setItem(STORAGE_KEYS.VAULT_SALT,     saltBlob);
             localStorage.setItem(STORAGE_KEYS.VAULT_VERIFY,   JSON.stringify(verifyData));
             localStorage.setItem(STORAGE_KEYS.VAULT_USERNAME, username);
             localStorage.setItem(STORAGE_KEYS.VAULT_DATA, JSON.stringify([]));
             localStorage.setItem(STORAGE_KEYS.VAULT_NOTES, JSON.stringify([]));
             localStorage.setItem(STORAGE_KEYS.VAULT_ATTACHMENTS, JSON.stringify([]));
+            const recoveryKey = await createRecovery(keyBytes);
+            // Written last: exists() only reports a vault once everything else is in place
+            localStorage.setItem(STORAGE_KEYS.VAULT_SALT, keyBlob);
+            keyBytes.fill(0);
 
-            // Generate recovery key — encrypts the raw Argon2id hash bytes with recovery key
-            const recoveryKey = generateRecoveryKey();
-            const recoverySalt = Crypto.generateSalt();
-            const recoveryDerivedKey = await Crypto.deriveKey(recoveryKey, recoverySalt, Crypto.KDF.ARGON2ID);
-            const recoveryEncrypted = await Crypto.encrypt(
-                Crypto.arrayBufferToBase64(rawKeyBytes), recoveryDerivedKey
-            );
-            localStorage.setItem(STORAGE_KEYS.VAULT_RECOVERY, JSON.stringify({
-                salt: Crypto.arrayBufferToBase64(recoverySalt),
-                vaultSalt: Crypto.arrayBufferToBase64(salt),
-                ciphertext: recoveryEncrypted.ciphertext,
-                iv: recoveryEncrypted.iv
-            }));
-
-            return { success: true, key, salt, kdf: Crypto.KDF.ARGON2ID, recoveryKey };
+            return { success: true, key, kdf: Crypto.KDF.ARGON2ID, recoveryKey };
         } catch (error) {
             console.error('[Vault] Initialization failed:', error);
-            return { success: false, error };
+            return { success: false, error: 'Failed to create vault' };
         }
     }
 
@@ -122,11 +220,12 @@ const Vault = (function () {
     }
 
     /**
-     * Recovers the vault using a recovery key
+     * Recovers the vault using a recovery key, optionally setting a new master key
      * @param {string} recoveryKey
-     * @returns {Promise<{success: boolean, key?: CryptoKey, salt?: Uint8Array}>}
+     * @param {string} [newMasterPassword]
+     * @returns {Promise<{success: boolean, key?: CryptoKey, error?: string}>}
      */
-    async function recoverWithKey(recoveryKey) {
+    async function recoverWithKey(recoveryKey, newMasterPassword) {
         try {
             const recoveryDataStr = localStorage.getItem(STORAGE_KEYS.VAULT_RECOVERY);
             if (!recoveryDataStr) {
@@ -135,81 +234,63 @@ const Vault = (function () {
 
             const recoveryData = JSON.parse(recoveryDataStr);
             const recoverySalt = Crypto.base64ToArrayBuffer(recoveryData.salt);
-            const recoveryDerivedKey = await Crypto.deriveKey(recoveryKey, recoverySalt);
+            const recoveryDerivedKey = await Crypto.deriveKey(recoveryKey, recoverySalt, Crypto.KDF.ARGON2ID);
 
-            let exportedKeyBase64;
+            let keyBytes;
             try {
-                exportedKeyBase64 = await Crypto.decrypt(recoveryData.ciphertext, recoveryData.iv, recoveryDerivedKey);
+                keyBytes = Crypto.base64ToArrayBuffer(
+                    await Crypto.decrypt(recoveryData.ciphertext, recoveryData.iv, recoveryDerivedKey)
+                );
             } catch (e) {
                 return { success: false, error: 'Invalid recovery key' };
             }
 
-            // Import the raw key bytes back as a CryptoKey
-            const rawKeyBytes = Crypto.base64ToArrayBuffer(exportedKeyBase64);
-            const key = await crypto.subtle.importKey(
-                'raw', rawKeyBytes,
-                { name: 'AES-GCM', length: 256 },
-                false, ['encrypt', 'decrypt']
-            );
-
-            // Verify it can decrypt the vault verification token
-            const verifyData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_VERIFY));
-            try {
-                const verified = await Crypto.decrypt(verifyData.ciphertext, verifyData.iv, key);
-                if (verified !== 'SAFEKEY_VERIFY_TOKEN') {
-                    return { success: false, error: 'Recovery key mismatch' };
-                }
-            } catch {
-                return { success: false, error: 'Recovery key mismatch' };
+            const key = await verifyVaultKey(keyBytes);
+            if (!key) {
+                return { success: false, error: 'Recovery key does not match this vault' };
             }
 
-            const vaultSalt = Crypto.base64ToArrayBuffer(recoveryData.vaultSalt);
-            return { success: true, key, salt: vaultSalt };
+            if (newMasterPassword) {
+                localStorage.setItem(STORAGE_KEYS.VAULT_SALT, await buildKeyBlob(keyBytes, newMasterPassword));
+            }
+            keyBytes.fill(0);
+            return { success: true, key };
         } catch (error) {
             console.error('[Vault] Recovery failed:', error);
-            return { success: false, error: error.message };
+            return { success: false, error: 'Recovery failed' };
         }
     }
 
     /**
-     * Attempts to unlock the vault with master password
+     * Attempts to unlock the vault with master password. Vaults using an older
+     * KDF are upgraded in place; if their recovery data no longer matched, a new
+     * recovery key is created and returned so it can be shown to the user.
      * @param {string} masterPassword
-     * @returns {Promise<{success: boolean, key?: CryptoKey, salt?: Uint8Array}>}
+     * @returns {Promise<{success: boolean, key?: CryptoKey, kdf?: string, upgraded?: boolean, recoveryKey?: string}>}
      */
     async function unlock(masterPassword) {
         try {
-            const saltRaw = localStorage.getItem(STORAGE_KEYS.VAULT_SALT);
-            if (!saltRaw) return { success: false, error: 'No vault found' };
+            const blob = readKeyBlob();
+            if (!blob) return { success: false, error: 'No vault found' };
 
-            // Parse salt blob — handle legacy plain-base64 format
-            let saltBase64, kdf;
-            try {
-                const parsed = JSON.parse(saltRaw);
-                saltBase64 = parsed.salt;
-                kdf        = parsed.kdf || Crypto.KDF.PBKDF2;
-            } catch {
-                // Legacy vault: raw base64 string (PBKDF2)
-                saltBase64 = saltRaw;
-                kdf        = Crypto.KDF.PBKDF2;
-            }
+            const keyBytes = await openVaultKey(masterPassword, blob);
+            const key = keyBytes && await verifyVaultKey(keyBytes);
+            if (!key) return { success: false, error: 'Invalid master key' };
 
-            const salt = Crypto.base64ToArrayBuffer(saltBase64);
-            const key  = await Crypto.deriveKey(masterPassword, salt, kdf);
-
-            const verifyData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_VERIFY));
-            try {
-                const verified = await Crypto.decrypt(verifyData.ciphertext, verifyData.iv, key);
-                if (verified !== 'SAFEKEY_VERIFY_TOKEN') {
-                    return { success: false, error: 'Invalid master key' };
+            let recoveryKey = null;
+            const upgraded = !usesCurrentKdf(blob);
+            if (upgraded) {
+                if (!blob.wrappedKey && !legacyRecoveryMatches(blob)) {
+                    recoveryKey = await createRecovery(keyBytes);
                 }
-            } catch {
-                return { success: false, error: 'Invalid master key' };
+                localStorage.setItem(STORAGE_KEYS.VAULT_SALT, await buildKeyBlob(keyBytes, masterPassword));
             }
+            keyBytes.fill(0);
 
-            return { success: true, key, salt, kdf };
+            return { success: true, key, kdf: blob.kdf, upgraded, recoveryKey };
         } catch (error) {
             console.error('[Vault] Unlock failed:', error);
-            return { success: false, error: error.message };
+            return { success: false, error: 'Unlock failed' };
         }
     }
 
@@ -426,19 +507,42 @@ const Vault = (function () {
 
     /**
      * Exports vault data (encrypted blob)
+     * @param {{includeAttachments?: boolean}} [options]
      * @returns {string} Encrypted vault data
      */
-    function exportVault() {
+    function exportVault({ includeAttachments = true } = {}) {
         return JSON.stringify({
+            format: 'safekey-vault',
+            version: 2,
+            username: getUsername(),
             salt: localStorage.getItem(STORAGE_KEYS.VAULT_SALT),
             verify: localStorage.getItem(STORAGE_KEYS.VAULT_VERIFY),
             data: localStorage.getItem(STORAGE_KEYS.VAULT_DATA),
-            notes: localStorage.getItem(STORAGE_KEYS.VAULT_NOTES) || '[]'
+            notes: localStorage.getItem(STORAGE_KEYS.VAULT_NOTES) || '[]',
+            attachments: includeAttachments ? (localStorage.getItem(STORAGE_KEYS.VAULT_ATTACHMENTS) || '[]') : '[]',
+            recovery: localStorage.getItem(STORAGE_KEYS.VAULT_RECOVERY)
         });
     }
 
     /**
-     * Imports vault data
+     * Parses a JSON array of encrypted entries and checks each entry's shape
+     * @param {string} json
+     * @returns {Array}
+     */
+    function parseEncryptedEntries(json) {
+        const entries = JSON.parse(json);
+        if (!Array.isArray(entries)) throw new Error('Invalid vault structure');
+        for (const entry of entries) {
+            if (!entry || typeof entry.id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(entry.id) ||
+                typeof entry.data !== 'string' || typeof entry.iv !== 'string') {
+                throw new Error('Invalid vault entry');
+            }
+        }
+        return entries;
+    }
+
+    /**
+     * Imports vault data, replacing the vault on this device
      * @param {string} exportedData
      * @returns {boolean}
      */
@@ -448,15 +552,34 @@ const Vault = (function () {
             if (typeof data.salt !== 'string' || typeof data.verify !== 'string' || typeof data.data !== 'string') {
                 throw new Error('Invalid vault structure');
             }
-            // Validate data fields parse correctly before storing
-            JSON.parse(data.verify);
-            JSON.parse(data.data);
+            // Validate every field before touching storage
+            const verify = JSON.parse(data.verify);
+            if (!verify || typeof verify.ciphertext !== 'string' || typeof verify.iv !== 'string') {
+                throw new Error('Invalid verification data');
+            }
+            parseEncryptedEntries(data.data);
+            const notes = typeof data.notes === 'string' ? data.notes : '[]';
+            parseEncryptedEntries(notes);
+            // Attachments from other vaults could not be decrypted, so a backup without them clears them
+            const attachments = typeof data.attachments === 'string' ? data.attachments : '[]';
+            parseEncryptedEntries(attachments);
+            const recovery = typeof data.recovery === 'string' ? data.recovery : null;
+            if (recovery !== null && typeof JSON.parse(recovery) !== 'object') {
+                throw new Error('Invalid recovery data');
+            }
+
             localStorage.setItem(STORAGE_KEYS.VAULT_SALT, data.salt);
             localStorage.setItem(STORAGE_KEYS.VAULT_VERIFY, data.verify);
             localStorage.setItem(STORAGE_KEYS.VAULT_DATA, data.data);
-            if (data.notes) {
-                JSON.parse(data.notes);
-                localStorage.setItem(STORAGE_KEYS.VAULT_NOTES, data.notes);
+            localStorage.setItem(STORAGE_KEYS.VAULT_NOTES, notes);
+            localStorage.setItem(STORAGE_KEYS.VAULT_ATTACHMENTS, attachments);
+            if (recovery !== null) {
+                localStorage.setItem(STORAGE_KEYS.VAULT_RECOVERY, recovery);
+            } else {
+                localStorage.removeItem(STORAGE_KEYS.VAULT_RECOVERY);
+            }
+            if (typeof data.username === 'string' && data.username.trim()) {
+                localStorage.setItem(STORAGE_KEYS.VAULT_USERNAME, data.username.trim());
             }
             return true;
         } catch (e) {
@@ -466,88 +589,32 @@ const Vault = (function () {
     }
 
     /**
-     * Changes the master key by re-encrypting all credentials
+     * Changes the master key. Only the wrapped vault key changes, so stored
+     * data and the recovery key stay valid.
      * @param {string} currentPassword
      * @param {string} newPassword
-     * @returns {Promise<{success: boolean, key?: CryptoKey, salt?: Uint8Array}>}
+     * @returns {Promise<{success: boolean, key?: CryptoKey, recoveryKey?: string, error?: string}>}
      */
     async function changeMasterKey(currentPassword, newPassword) {
         try {
-            const saltRaw = localStorage.getItem(STORAGE_KEYS.VAULT_SALT);
-            if (!saltRaw) return { success: false, error: 'No vault found' };
+            const blob = readKeyBlob();
+            if (!blob) return { success: false, error: 'No vault found' };
 
-            let saltBase64, currentKdf;
-            try {
-                const parsed = JSON.parse(saltRaw);
-                saltBase64  = parsed.salt;
-                currentKdf  = parsed.kdf || Crypto.KDF.PBKDF2;
-            } catch {
-                saltBase64  = saltRaw;
-                currentKdf  = Crypto.KDF.PBKDF2;
+            const keyBytes = await openVaultKey(currentPassword, blob);
+            const key = keyBytes && await verifyVaultKey(keyBytes);
+            if (!key) return { success: false, error: 'Invalid current master key' };
+
+            let recoveryKey = null;
+            if (!blob.wrappedKey && !legacyRecoveryMatches(blob)) {
+                recoveryKey = await createRecovery(keyBytes);
             }
+            localStorage.setItem(STORAGE_KEYS.VAULT_SALT, await buildKeyBlob(keyBytes, newPassword));
+            keyBytes.fill(0);
 
-            const currentSalt = Crypto.base64ToArrayBuffer(saltBase64);
-            const currentKey  = await Crypto.deriveKey(currentPassword, currentSalt, currentKdf);
-
-            const verifyData = JSON.parse(localStorage.getItem(STORAGE_KEYS.VAULT_VERIFY));
-            try {
-                const verified = await Crypto.decrypt(verifyData.ciphertext, verifyData.iv, currentKey);
-                if (verified !== 'SAFEKEY_VERIFY_TOKEN') {
-                    return { success: false, error: 'Invalid current master key' };
-                }
-            } catch {
-                return { success: false, error: 'Invalid current master key' };
-            }
-
-            const allCreds = await getAll();
-
-            // Always re-encrypt under Argon2id (upgrades legacy PBKDF2 vaults)
-            const newSalt       = Crypto.generateSalt();
-            const newKey        = await Crypto.deriveKey(newPassword, newSalt, Crypto.KDF.ARGON2ID);
-            const newVerifyData = await Crypto.encrypt('SAFEKEY_VERIFY_TOKEN', newKey);
-            const newSaltBlob   = JSON.stringify({
-                salt: Crypto.arrayBufferToBase64(newSalt),
-                kdf:  Crypto.KDF.ARGON2ID
-            });
-
-            const newEncryptedData = [];
-            for (const cred of allCreds) {
-                const credData = { ...cred };
-                delete credData.id;
-                const encrypted = await Crypto.encrypt(JSON.stringify(credData), newKey);
-                newEncryptedData.push({ id: cred.id, data: encrypted.ciphertext, iv: encrypted.iv });
-            }
-
-            // Re-encrypt notes too
-            const allNotes = await getAllNotes();
-            const newEncryptedNotes = [];
-            for (const note of allNotes) {
-                const noteData = { ...note };
-                delete noteData.id;
-                const encrypted = await Crypto.encrypt(JSON.stringify(noteData), newKey);
-                newEncryptedNotes.push({ id: note.id, data: encrypted.ciphertext, iv: encrypted.iv });
-            }
-
-            localStorage.setItem(STORAGE_KEYS.VAULT_SALT, newSaltBlob);
-            localStorage.setItem(STORAGE_KEYS.VAULT_VERIFY, JSON.stringify(newVerifyData));
-            localStorage.setItem(STORAGE_KEYS.VAULT_DATA, JSON.stringify(newEncryptedData));
-            localStorage.setItem(STORAGE_KEYS.VAULT_NOTES, JSON.stringify(newEncryptedNotes));
-
-            // Re-encrypt attachments too
-            const allAttachments = await getAllAttachments();
-            const newEncryptedAttachments = [];
-            for (const att of allAttachments) {
-                const attData = { ...att };
-                delete attData.id;
-                const encrypted = await Crypto.encrypt(JSON.stringify(attData), newKey);
-                newEncryptedAttachments.push({ id: att.id, data: encrypted.ciphertext, iv: encrypted.iv });
-            }
-            localStorage.setItem(STORAGE_KEYS.VAULT_ATTACHMENTS, JSON.stringify(newEncryptedAttachments));
-
-            return { success: true, key: newKey, salt: newSalt, kdf: Crypto.KDF.ARGON2ID };
+            return { success: true, key, kdf: Crypto.KDF.ARGON2ID, recoveryKey };
         } catch (error) {
             console.error('[Vault] Change master key failed:', error);
-            return { success: false, error: error.message };
+            return { success: false, error: 'Failed to change master key' };
         }
     }
 

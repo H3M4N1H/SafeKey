@@ -7,11 +7,11 @@
     <meta name="description"
         content="SafeKey - A local-only, encrypted password manager. No cloud, no syncing, complete security.">
     <meta name="theme-color" content="#00e5ff">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://api.pwnedpasswords.com ipc: http://ipc.localhost; media-src 'self' blob: mediastream:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
     <title>SafeKey - Secure Password Manager</title>
     <link rel="stylesheet" href="style.css">
     <link rel="manifest" href="manifest.json">
     <link rel="icon" href="safekey.png" type="image/png">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
 
 <body>
@@ -705,7 +705,15 @@
             <form id="recoveryUnlockForm">
                 <div class="form-group">
                     <label for="recoveryKeyInput">Recovery Key</label>
-                    <input type="text" id="recoveryKeyInput" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" required style="font-family:'Courier New',monospace;letter-spacing:0.05em">
+                    <input type="text" id="recoveryKeyInput" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" required autocomplete="off" style="font-family:'Courier New',monospace;letter-spacing:0.05em">
+                </div>
+                <div class="form-group">
+                    <label for="recoveryNewMasterKey">New Master Key</label>
+                    <input type="password" id="recoveryNewMasterKey" placeholder="Enter a new master key" required autocomplete="new-password">
+                </div>
+                <div class="form-group">
+                    <label for="recoveryConfirmMasterKey">Confirm New Master Key</label>
+                    <input type="password" id="recoveryConfirmMasterKey" placeholder="Confirm the new master key" required autocomplete="new-password">
                 </div>
                 <button type="submit" class="btn btn-primary btn-full">Recover Vault</button>
             </form>
@@ -806,8 +814,8 @@
 
     <!-- Scripts -->
     <!-- Argon2id WASM (loaded before crypto.js so Crypto.deriveKeyArgon2id can use it) -->
-    <script src="https://cdn.jsdelivr.net/npm/argon2-browser@1.18.0/dist/argon2-bundled.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+    <script src="vendor/argon2-bundled.min.js"></script>
+    <script src="vendor/qrcode.js"></script>
     <script src="js/totp.js"></script>
     <script src="js/crypto.js"></script>
     <script src="js/session.js"></script>

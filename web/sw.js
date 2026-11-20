@@ -3,7 +3,7 @@
  * Enables offline use by caching all app assets.
  */
 
-const CACHE_NAME = 'safekey-v15';
+const CACHE_NAME = 'safekey-v16';
 const ASSETS = [
     '/',
     '/index.html',
@@ -20,7 +20,14 @@ const ASSETS = [
     '/js/lockout.js',
     '/js/analyzer.js',
     '/js/generator.js',
-    '/js/totp.js'
+    '/js/totp.js',
+    '/vendor/argon2-bundled.min.js',
+    '/vendor/qrcode.js',
+    '/fonts/inter-latin-300-normal.woff2',
+    '/fonts/inter-latin-400-normal.woff2',
+    '/fonts/inter-latin-500-normal.woff2',
+    '/fonts/inter-latin-600-normal.woff2',
+    '/fonts/inter-latin-700-normal.woff2'
 ];
 
 self.addEventListener('install', event => {

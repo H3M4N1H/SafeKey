@@ -39,6 +39,7 @@ const Session = (function () {
         CONFIG.ACTIVITY_EVENTS.forEach(event => {
             document.addEventListener(event, resetActivity, { passive: true });
         });
+        document.addEventListener('visibilitychange', lockIfExpired);
 
         // Start timeout countdown
         startTimeout();
@@ -51,6 +52,17 @@ const Session = (function () {
     function resetActivity() {
         _lastActivity = Date.now();
         startTimeout();
+    }
+
+    /**
+     * Timers pause while a mobile app is in the background, so check the
+     * real idle time when the app becomes visible again
+     */
+    function lockIfExpired() {
+        if (document.hidden || !_lastActivity) return;
+        if (Date.now() - _lastActivity >= CONFIG.TIMEOUT_MINUTES * 60 * 1000) {
+            lock();
+        }
     }
 
     /**
@@ -156,6 +168,7 @@ const Session = (function () {
         CONFIG.ACTIVITY_EVENTS.forEach(event => {
             document.removeEventListener(event, resetActivity);
         });
+        document.removeEventListener('visibilitychange', lockIfExpired);
 
         _lastActivity = null;
 

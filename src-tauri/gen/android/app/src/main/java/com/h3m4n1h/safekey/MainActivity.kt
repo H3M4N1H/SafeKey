@@ -3,6 +3,7 @@ package com.h3m4n1h.safekey
 import android.graphics.Color
 import android.os.Bundle
 import android.view.View
+import android.view.WindowManager
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
@@ -16,6 +17,9 @@ class MainActivity : TauriActivity() {
       navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
     )
     super.onCreate(savedInstanceState)
+
+    // Keep vault contents out of screenshots, screen recordings and the recent-apps preview
+    window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
 
     // Keep the WebView clear of the status bar, navigation bar, display cutout and keyboard
     val content = findViewById<View>(android.R.id.content)

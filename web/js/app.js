@@ -49,11 +49,19 @@ const App = (function () {
     };
 
     let totpInterval = null;
+    let pendingRecoveryToast = null;
 
     async function init() {
         applyTheme(localStorage.getItem('safekey_theme') || 'dark');
         cacheElements();
         bindEvents();
+
+        // Keep keyboards from learning or suggesting secrets, including when revealed as text
+        document.querySelectorAll('input[type="password"], #recoveryKeyInput').forEach(input => {
+            input.spellcheck = false;
+            input.setAttribute('autocorrect', 'off');
+            input.setAttribute('autocapitalize', 'off');
+        });
         Session.onLock(handleVaultLock);
         showEntryView();
         registerServiceWorker();
@@ -192,6 +200,8 @@ const App = (function () {
         elements.closeRecoveryUnlock = document.getElementById('closeRecoveryUnlock');
         elements.recoveryUnlockForm = document.getElementById('recoveryUnlockForm');
         elements.recoveryKeyInput = document.getElementById('recoveryKeyInput');
+        elements.recoveryNewMasterKey = document.getElementById('recoveryNewMasterKey');
+        elements.recoveryConfirmMasterKey = document.getElementById('recoveryConfirmMasterKey');
 
         // QR transfer elements
         elements.showQrBtn = document.getElementById('showQrBtn');
@@ -231,7 +241,13 @@ const App = (function () {
     }
 
     function bindEvents() {
-        elements.generateVaultBtn.addEventListener('click', () => showView('setup'));
+        elements.generateVaultBtn.addEventListener('click', () => {
+            if (Vault.exists()) {
+                showToast('A vault already exists on this device. Unlock it, or wipe it in Settings before creating a new one.', 'warning');
+                return;
+            }
+            showView('setup');
+        });
         elements.openVaultBtn.addEventListener('click', showUnlockView);
         elements.backFromSetup.addEventListener('click', () => showView('landing'));
         elements.backFromUnlock.addEventListener('click', () => showView('landing'));
@@ -406,8 +422,10 @@ const App = (function () {
         });
         elements.confirmRecoveryKey.addEventListener('click', () => {
             elements.recoveryKeyModal.classList.add('hidden');
+            elements.recoveryKeyDisplay.textContent = '';
             navigateTo('vault');
-            showToast('Vault created successfully!', 'success');
+            if (pendingRecoveryToast) showToast(pendingRecoveryToast, 'success');
+            pendingRecoveryToast = null;
         });
         elements.useRecoveryKeyBtn.addEventListener('click', () => {
             elements.recoveryUnlockModal.classList.remove('hidden');
@@ -537,6 +555,13 @@ const App = (function () {
         elements.masterKeyUnlock.focus();
     }
 
+    // Shows a recovery key once; the vault opens after the user confirms they saved it
+    function showRecoveryKey(recoveryKey, toastMessage) {
+        pendingRecoveryToast = toastMessage;
+        elements.recoveryKeyDisplay.textContent = recoveryKey;
+        elements.recoveryKeyModal.classList.remove('hidden');
+    }
+
     function navigateTo(viewName) {
         document.querySelectorAll('.nav-item').forEach(item => {
             item.classList.toggle('active', item.dataset.view === viewName);
@@ -557,21 +582,17 @@ const App = (function () {
         if (!username) return showToast('Username is required', 'error');
         if (password !== confirm) return showToast('Passwords do not match', 'error');
         if (password.length < 8) return showToast('Master key must be at least 8 characters', 'error');
+        if (Vault.exists()) return showToast('A vault already exists on this device', 'error');
 
         try {
             const result = await Vault.initialize(username, password);
             if (result.success) {
-                Session.start(result.key, result.salt);
-                if (result.recoveryKey) {
-                    // Show recovery key modal — user must acknowledge before proceeding
-                    elements.recoveryKeyDisplay.textContent = result.recoveryKey;
-                    elements.recoveryKeyModal.classList.remove('hidden');
-                } else {
-                    navigateTo('vault');
-                    showToast('Vault created successfully!', 'success');
-                }
+                elements.setupForm.reset();
+                Session.start(result.key);
+                // User must acknowledge the recovery key before the vault opens
+                showRecoveryKey(result.recoveryKey, 'Vault created successfully!');
             } else {
-                showToast('Failed to create vault', 'error');
+                showToast(result.error || 'Failed to create vault', 'error');
             }
         } catch (error) {
             console.error('[App] Setup error:', error);
@@ -582,16 +603,19 @@ const App = (function () {
     async function handleRecoveryUnlock(e) {
         e.preventDefault();
         const recoveryKey = elements.recoveryKeyInput.value.trim().toUpperCase();
+        const newMasterKey = elements.recoveryNewMasterKey.value;
         if (!recoveryKey) return showToast('Recovery key is required', 'error');
+        if (newMasterKey.length < 8) return showToast('New master key must be at least 8 characters', 'error');
+        if (newMasterKey !== elements.recoveryConfirmMasterKey.value) return showToast('New master keys do not match', 'error');
 
         try {
-            const result = await Vault.recoverWithKey(recoveryKey);
+            const result = await Vault.recoverWithKey(recoveryKey, newMasterKey);
             if (result.success) {
-                Session.start(result.key, result.salt);
+                Session.start(result.key);
                 elements.recoveryUnlockModal.classList.add('hidden');
-                elements.recoveryKeyInput.value = '';
+                elements.recoveryUnlockForm.reset();
                 navigateTo('vault');
-                showToast('Vault recovered successfully', 'success');
+                showToast('Vault recovered and master key reset', 'success');
             } else {
                 showToast(result.error || 'Invalid recovery key', 'error');
             }
@@ -630,19 +654,19 @@ const App = (function () {
             const result = await Vault.unlock(password);
             if (result.success) {
                 Lockout.reset();
-                Session.start(result.key, result.salt);
+                Session.start(result.key);
                 elements.usernameUnlock.value = '';
                 elements.masterKeyUnlock.value = '';
                 elements.unlockError.classList.add('hidden');
                 elements.lockoutMessage.classList.add('hidden');
 
-                // If vault was PBKDF2, show one-time upgrade toast
-                if (result.kdf === Crypto.KDF.PBKDF2) {
-                    navigateTo('vault');
-                    showToast('Vault unlocked (legacy PBKDF2). Change your master key in Settings to upgrade to Argon2id.', 'warning');
+                const message = result.upgraded ? 'Vault unlocked and upgraded to stronger encryption' : 'Vault unlocked';
+                if (result.recoveryKey) {
+                    // The old recovery key no longer matched this vault, so a new one was made
+                    showRecoveryKey(result.recoveryKey, message);
                 } else {
                     navigateTo('vault');
-                    showToast('Vault unlocked', 'success');
+                    showToast(message, 'success');
                 }
             } else {
                 // Record failure and start countdown if now locked out
@@ -673,8 +697,23 @@ const App = (function () {
     }
 
     function handleVaultLock() {
+        clearSensitiveUi();
         showEntryView();
         showToast('Vault locked', 'info');
+    }
+
+    // Removes decrypted data and typed secrets from the page when the vault locks
+    function clearSensitiveUi() {
+        stopScanner();
+        document.querySelectorAll('.modal-overlay').forEach(modal => modal.classList.add('hidden'));
+        document.querySelectorAll('form').forEach(form => form.reset());
+        [elements.credentialsList, elements.notesList, elements.healthContent,
+            elements.attachmentsList, elements.qrCanvas].forEach(el => {
+            if (el) el.innerHTML = '';
+        });
+        elements.recoveryKeyDisplay.textContent = '';
+        qrChunks = [];
+        pendingRecoveryToast = null;
     }
 
     // ─── Vault view ───────────────────────────────────────────────────────────
@@ -747,18 +786,8 @@ const App = (function () {
                 ? `<button class="icon-btn fav-btn fav-active" title="Unfavorite" data-id="${cred.id}">${ICONS.starFilled}</button>`
                 : `<button class="icon-btn fav-btn" title="Favorite" data-id="${cred.id}">${ICONS.star}</button>`;
 
-            // Favicon or initials
-            let iconContent;
-            if (cred.url && isSafeUrl(cred.url)) {
-                try {
-                    const domain = new URL(cred.url).hostname;
-                    iconContent = `<img src="https://www.google.com/s2/favicons?domain=${domain}&sz=32" width="24" height="24" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" style="border-radius:4px"><span class="credential-initials" style="display:none">${getInitials(cred.site)}</span>`;
-                } catch {
-                    iconContent = getInitials(cred.site);
-                }
-            } else {
-                iconContent = getInitials(cred.site);
-            }
+            // Initials only: fetching favicons would reveal saved sites to a third party
+            const iconContent = getInitials(cred.site);
 
             // Password history badge
             const historyBadge = (cred.passwordHistory && cred.passwordHistory.length > 0)
@@ -1467,16 +1496,19 @@ const App = (function () {
         if (current === newKey) return showToast('New key must be different from current', 'error');
 
         const submitBtn = elements.changeMasterKeyForm.querySelector('button[type="submit"]');
-        submitBtn.textContent = 'Re-encrypting...';
+        submitBtn.textContent = 'Updating...';
         submitBtn.disabled = true;
 
         try {
             const result = await Vault.changeMasterKey(current, newKey);
             if (result.success) {
-                // Update session with new key
-                Session.start(result.key, result.salt);
+                Session.start(result.key);
                 closeSettingsModal();
-                showToast('Master key changed successfully', 'success');
+                if (result.recoveryKey) {
+                    showRecoveryKey(result.recoveryKey, 'Master key changed successfully');
+                } else {
+                    showToast('Master key changed successfully', 'success');
+                }
             } else {
                 showToast(result.error || 'Failed to change master key', 'error');
             }
@@ -1917,13 +1949,17 @@ const App = (function () {
     }
 
     function getInitials(site) {
-        return (site || '??').substring(0, 2).toUpperCase();
+        return escapeHtml((site || '??').substring(0, 2).toUpperCase());
     }
 
+    // Safe for both element content and quoted attribute values
     function escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
+        return String(str || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     function isSafeUrl(url) {
@@ -1957,7 +1993,7 @@ const App = (function () {
     let qrCurrentPage = 0;
 
     function handleShowQr() {
-        const data = Vault.exportVault();
+        const data = Vault.exportVault({ includeAttachments: false });
         const MAX_CHUNK = 400;
 
         qrChunks = [];
@@ -2071,6 +2107,7 @@ const App = (function () {
         if (scanTotalChunks === 0) {
             scanTotalChunks = total;
         }
+        if (total !== scanTotalChunks || chunkNum < 1 || chunkNum > total) return;
 
         if (!scanCollectedChunks[chunkNum]) {
             scanCollectedChunks[chunkNum] = payload;

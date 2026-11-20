@@ -57,6 +57,25 @@ jobs:
           cargo tauri --version
       - name: Ensure Gradle wrapper is executable
         run: chmod +x src-tauri/gen/android/gradlew
+      - name: Configure release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ]; then
+            echo "::error::Android signing secrets are missing; refusing to build an unsigned release APK."
+            exit 1
+          fi
+          keystore="$RUNNER_TEMP/safekey-release.jks"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          {
+            echo "storeFile=$keystore"
+            echo "password=$ANDROID_KEYSTORE_PASSWORD"
+            echo "keyAlias=$ANDROID_KEY_ALIAS"
+            echo "keyPassword=${ANDROID_KEY_PASSWORD:-$ANDROID_KEYSTORE_PASSWORD}"
+          } > src-tauri/gen/android/keystore.properties
       - name: Build Android APK
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
@@ -64,6 +83,15 @@ jobs:
         run: |
           set -o pipefail
           npm run tauri:android:apk -- --verbose 2>&1 | tee "$RUNNER_TEMP/safekey-android-build.log"
+      - name: Verify APK signature
+        run: |
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -path '*/release/*.apk' ! -name '*-unsigned.apk' -type f | head -n 1)
+          if [ -z "$apk" ]; then
+            echo "::error::No signed release APK was produced."
+            exit 1
+          fi
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk"
+          echo "SIGNED_APK=$apk" >> "$GITHUB_ENV"
       - name: Upload build log
         if: failure()
         uses: actions/upload-artifact@v4
@@ -75,17 +103,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SafeKey-Android-APK
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          path: ${{ env.SIGNED_APK }}
           if-no-files-found: error
       - name: Publish GitHub prerelease
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' -type f | head -n 1)
-          test -n "$apk"
           tag="branding-${GITHUB_SHA:0:7}"
-          gh release create "$tag" "$apk#SafeKey-Android.apk" \
+          gh release create "$tag" "$SIGNED_APK#SafeKey-Android.apk" \
             --title "SafeKey Android (${GITHUB_SHA:0:7})" \
-            --notes "Automated Android APK build with updated SafeKey branding. Check signing before installing over an existing version." \
+            --notes "Automated signed Android release APK build." \
             --prerelease --target "$GITHUB_SHA"

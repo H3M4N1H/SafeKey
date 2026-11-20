@@ -5,3 +5,4 @@ src-tauri/gen/
 *.keystore
 node_modules/
 dist/
+*.jks

@@ -11,6 +11,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
 
+      - name: Apply SafeKey 2D icon pack
+        shell: bash
+        run: |
+          python - <<'PY'
+          import zipfile
+          from pathlib import Path
+          with zipfile.ZipFile('SafeKey_2D_Icon_Pack.zip') as z:
+              for item in z.infolist():
+                  path = Path(item.filename)
+                  if path.is_absolute() or '..' in path.parts:
+                      raise ValueError('Unsafe archive path')
+                  if item.filename.startswith(('web/', 'src-tauri/icons/', 'src-tauri/gen/android/')):
+                      z.extract(item)
+          PY
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -57,6 +72,21 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
+
+      - name: Apply SafeKey 2D icon pack
+        shell: bash
+        run: |
+          python - <<'PY'
+          import zipfile
+          from pathlib import Path
+          with zipfile.ZipFile('SafeKey_2D_Icon_Pack.zip') as z:
+              for item in z.infolist():
+                  path = Path(item.filename)
+                  if path.is_absolute() or '..' in path.parts:
+                      raise ValueError('Unsafe archive path')
+                  if item.filename.startswith(('web/', 'src-tauri/icons/', 'src-tauri/gen/android/')):
+                      z.extract(item)
+          PY
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

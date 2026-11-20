@@ -1,0 +1,21 @@
+name: Clean up SafeKey release title
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/rename-android-release.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  rename:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rename existing Android release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release edit branding-8483b11 \
+            --title "SafeKey Android (8483b11)" \
+            --notes "Automated Android APK build with updated SafeKey branding. Check signing before installing over an existing version."

@@ -89,10 +89,22 @@ const App = (function () {
         applyTheme(current === 'dark' ? 'light' : 'dark');
     }
 
+    // The native apps bundle their files, and their WebViews cannot update a service worker,
+    // so only the browser version uses one; remove any left over from older app versions
     function registerServiceWorker() {
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('sw.js').catch(() => {});
+        if (!('serviceWorker' in navigator)) return;
+        const isNativeApp = '__TAURI_INTERNALS__' in window ||
+            location.protocol === 'tauri:' || location.hostname === 'tauri.localhost';
+        if (isNativeApp) {
+            navigator.serviceWorker.getRegistrations()
+                .then(registrations => registrations.forEach(r => r.unregister()))
+                .catch(() => {});
+            if ('caches' in window) {
+                caches.keys().then(keys => keys.forEach(k => caches.delete(k))).catch(() => {});
+            }
+            return;
         }
+        navigator.serviceWorker.register('sw.js').catch(() => {});
     }
 
     function cacheElements() {

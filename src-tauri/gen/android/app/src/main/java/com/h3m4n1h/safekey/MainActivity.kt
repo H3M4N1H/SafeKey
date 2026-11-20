@@ -8,9 +8,17 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import java.io.File
 
 class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
+    // The WebView cannot update a service worker on the app's origin, so a registered one keeps
+    // serving stale app files after an update. Remove its storage before the WebView starts;
+    // vault data lives in Local Storage, which is left alone.
+    listOf("app_webview/Default/Service Worker", "app_webview/Service Worker").forEach {
+      File(applicationInfo.dataDir, it).deleteRecursively()
+    }
+
     // Light status/navigation bar icons to match the app's dark background
     enableEdgeToEdge(
       statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),

@@ -15,9 +15,12 @@ jobs:
           persist-credentials: true
       - name: Extract and validate icon assets
         run: |
+          python3 -m pip install --disable-pip-version-check Pillow
           python3 - <<'PY'
+          import io
           import zipfile
           from pathlib import Path
+          from PIL import Image
           allowed = ('web/', 'src-tauri/icons/', 'src-tauri/gen/android/app/src/main/res/')
           with zipfile.ZipFile('SafeKey_2D_Icon_Pack.zip') as archive:
               for member in archive.infolist():
@@ -29,7 +32,18 @@ jobs:
                   if path.suffix.lower() not in ('.png', '.ico', '.icns'):
                       raise SystemExit('Unexpected icon format')
                   path.parent.mkdir(parents=True, exist_ok=True)
-                  path.write_bytes(archive.read(member))
+                  data = archive.read(member)
+                  if path.suffix.lower() != '.png':
+                      path.write_bytes(data)
+                      continue
+                  # Tauri rejects non-RGBA PNGs; skip files whose pixels already match to avoid churn commits
+                  with Image.open(io.BytesIO(data)) as source:
+                      image = source.convert('RGBA')
+                  if path.is_file():
+                      with Image.open(path) as current:
+                          if current.mode == 'RGBA' and current.size == image.size and current.tobytes() == image.tobytes():
+                              continue
+                  image.save(path, format='PNG')
           required = ['web/safekey.png', 'web/icon-192.png', 'web/icon-512.png',
                       'src-tauri/icons/icon.ico', 'src-tauri/icons/icon.icns',
                       'src-tauri/gen/android/app/src/main/res/mipmap-hdpi/ic_launcher.png']

@@ -34,7 +34,12 @@ jobs:
           node-version: '20'
       - name: Install Tauri CLI
         run: npm install
+      - name: Ensure Gradle wrapper is executable
+        run: chmod +x src-tauri/gen/android/gradlew
       - name: Build Android APK
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
         run: npm run tauri:android:apk
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

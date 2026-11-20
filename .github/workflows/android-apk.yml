@@ -40,7 +40,21 @@ jobs:
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
-        run: npm run tauri:android:apk
+        run: npm run tauri:android:apk -- --verbose
+      - name: Diagnose Gradle failure
+        if: failure()
+        working-directory: src-tauri/gen/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --stacktrace --info --console=plain 2>&1 | tee "$RUNNER_TEMP/safekey-gradle-diagnostics.log"
+          exit ${PIPESTATUS[0]}
+      - name: Upload Gradle diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SafeKey-Gradle-Diagnostics
+          path: ${{ runner.temp }}/safekey-gradle-diagnostics.log
+          if-no-files-found: ignore
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:

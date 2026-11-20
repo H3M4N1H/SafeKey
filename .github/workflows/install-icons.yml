@@ -1,0 +1,48 @@
+name: Install SafeKey icon pack
+on:
+  push:
+    branches: [main]
+    paths: ['SafeKey_2D_Icon_Pack.zip']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  install-icons:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Extract and validate icon assets
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path
+          allowed = ('web/', 'src-tauri/icons/', 'src-tauri/gen/android/app/src/main/res/')
+          with zipfile.ZipFile('SafeKey_2D_Icon_Pack.zip') as archive:
+              for member in archive.infolist():
+                  path = Path(member.filename)
+                  if path.is_absolute() or '..' in path.parts:
+                      raise SystemExit('Unsafe path: ' + member.filename)
+                  if member.is_dir() or not member.filename.startswith(allowed):
+                      continue
+                  if path.suffix.lower() not in ('.png', '.ico', '.icns'):
+                      raise SystemExit('Unexpected icon format')
+                  path.parent.mkdir(parents=True, exist_ok=True)
+                  path.write_bytes(archive.read(member))
+          required = ['web/safekey.png', 'web/icon-192.png', 'web/icon-512.png',
+                      'src-tauri/icons/icon.ico', 'src-tauri/icons/icon.icns',
+                      'src-tauri/gen/android/app/src/main/res/mipmap-hdpi/ic_launcher.png']
+          for path in required:
+              if not Path(path).is_file():
+                  raise SystemExit('Missing required icon: ' + path)
+          PY
+      - name: Commit extracted icons
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/*.png src-tauri/icons src-tauri/gen/android/app/src/main/res
+          if ! git diff --cached --quiet; then
+            git commit -m "Install SafeKey 2D icons for web, desktop and Android"
+            git push
+          fi

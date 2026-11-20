@@ -165,7 +165,11 @@
                             <p>Enter your master key to access your passwords</p>
                         </div>
                         <form id="unlockForm" class="auth-form" autocomplete="off">
-                            <div class="form-group">
+                            <div class="remembered-user hidden" id="rememberedUser">
+                                <span class="remembered-user-avatar" id="rememberedUserAvatar"></span>
+                                <span class="remembered-user-name" id="rememberedUserName"></span>
+                            </div>
+                            <div class="form-group" id="usernameUnlockGroup">
                                 <label for="usernameUnlock">Username</label>
                                 <div class="input-wrapper">
                                     <input type="text" id="usernameUnlock" placeholder="Enter your username" required

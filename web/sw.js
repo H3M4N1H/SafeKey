@@ -3,7 +3,7 @@
  * Enables offline use by caching all app assets.
  */
 
-const CACHE_NAME = 'safekey-v14';
+const CACHE_NAME = 'safekey-v15';
 const ASSETS = [
     '/',
     '/index.html',

@@ -55,7 +55,7 @@ const App = (function () {
         cacheElements();
         bindEvents();
         Session.onLock(handleVaultLock);
-        showView('landing');
+        showEntryView();
         registerServiceWorker();
 
         // Restore lockout state if page was reloaded during a cooldown
@@ -110,6 +110,10 @@ const App = (function () {
         elements.usernameSetup = document.getElementById('usernameSetup');
         elements.masterKeyConfirm = document.getElementById('masterKeyConfirm');
         elements.usernameUnlock = document.getElementById('usernameUnlock');
+        elements.usernameUnlockGroup = document.getElementById('usernameUnlockGroup');
+        elements.rememberedUser = document.getElementById('rememberedUser');
+        elements.rememberedUserAvatar = document.getElementById('rememberedUserAvatar');
+        elements.rememberedUserName = document.getElementById('rememberedUserName');
         elements.masterKeyUnlock = document.getElementById('masterKeyUnlock');
         elements.vaultSearch = document.getElementById('vaultSearch');
         elements.analyzerInput = document.getElementById('analyzerInput');
@@ -228,7 +232,7 @@ const App = (function () {
 
     function bindEvents() {
         elements.generateVaultBtn.addEventListener('click', () => showView('setup'));
-        elements.openVaultBtn.addEventListener('click', () => showView('unlock'));
+        elements.openVaultBtn.addEventListener('click', showUnlockView);
         elements.backFromSetup.addEventListener('click', () => showView('landing'));
         elements.backFromUnlock.addEventListener('click', () => showView('landing'));
 
@@ -508,6 +512,31 @@ const App = (function () {
         }
     }
 
+    // Go straight to the unlock screen when this device already has a vault
+    function showEntryView() {
+        if (Vault.exists()) {
+            showUnlockView();
+        } else {
+            showView('landing');
+        }
+    }
+
+    // The vault stores its username, so only ask for it when none is saved
+    function showUnlockView() {
+        const storedUsername = Vault.getUsername();
+        const remembered = Boolean(storedUsername);
+        elements.usernameUnlock.value = storedUsername || '';
+        elements.usernameUnlock.required = !remembered;
+        elements.usernameUnlockGroup.classList.toggle('hidden', remembered);
+        elements.rememberedUser.classList.toggle('hidden', !remembered);
+        if (remembered) {
+            elements.rememberedUserAvatar.textContent = storedUsername.charAt(0).toUpperCase();
+            elements.rememberedUserName.textContent = storedUsername;
+        }
+        showView('unlock');
+        elements.masterKeyUnlock.focus();
+    }
+
     function navigateTo(viewName) {
         document.querySelectorAll('.nav-item').forEach(item => {
             item.classList.toggle('active', item.dataset.view === viewName);
@@ -583,9 +612,6 @@ const App = (function () {
 
         const username = elements.usernameUnlock.value.trim();
         const password = elements.masterKeyUnlock.value;
-        // Show loading state while Argon2id hashes (can take ~1s)
-        elements.unlockSubmitBtn.textContent = 'Unlocking…';
-        elements.unlockSubmitBtn.disabled = true;
 
         if (!username) return showToast('Username is required', 'error');
 
@@ -595,6 +621,10 @@ const App = (function () {
             elements.masterKeyUnlock.value = '';
             return;
         }
+
+        // Show loading state while Argon2id hashes (can take ~1s)
+        elements.unlockSubmitBtn.textContent = 'Unlocking…';
+        elements.unlockSubmitBtn.disabled = true;
 
         try {
             const result = await Vault.unlock(password);
@@ -643,7 +673,7 @@ const App = (function () {
     }
 
     function handleVaultLock() {
-        showView('landing');
+        showEntryView();
         showToast('Vault locked', 'info');
     }
 

@@ -27,7 +27,7 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -82,16 +82,18 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
         run: |
           set -o pipefail
-          npm run tauri:android:apk -- --verbose 2>&1 | tee "$RUNNER_TEMP/safekey-android-build.log"
-      - name: Verify APK signature
+          # Ship only ARM builds, one APK per ABI, instead of a universal APK carrying all four ABIs.
+          npm run tauri:android:apk -- --split-per-abi --target aarch64 --target armv7 --verbose 2>&1 | tee "$RUNNER_TEMP/safekey-android-build.log"
+      - name: Verify APK signatures
         run: |
-          apk=$(find src-tauri/gen/android/app/build/outputs/apk -path '*/release/*.apk' ! -name '*-unsigned.apk' -type f | head -n 1)
-          if [ -z "$apk" ]; then
-            echo "::error::No signed release APK was produced."
-            exit 1
-          fi
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk"
-          echo "SIGNED_APK=$apk" >> "$GITHUB_ENV"
+          outputs=src-tauri/gen/android/app/build/outputs/apk
+          mkdir -p dist-apk
+          cp "$outputs/arm64/release/app-arm64-release.apk" dist-apk/SafeKey-Android-arm64.apk
+          cp "$outputs/arm/release/app-arm-release.apk" dist-apk/SafeKey-Android-armv7.apk
+          for apk in dist-apk/*.apk; do
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk"
+            ls -lh "$apk"
+          done
       - name: Upload build log
         if: failure()
         uses: actions/upload-artifact@v4
@@ -103,7 +105,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SafeKey-Android-APK
-          path: ${{ env.SIGNED_APK }}
+          path: dist-apk/*.apk
           if-no-files-found: error
       - name: Publish GitHub prerelease
         if: github.ref == 'refs/heads/main'
@@ -111,7 +113,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="branding-${GITHUB_SHA:0:7}"
-          gh release create "$tag" "$SIGNED_APK#SafeKey-Android.apk" \
+          gh release create "$tag" dist-apk/SafeKey-Android-arm64.apk dist-apk/SafeKey-Android-armv7.apk \
             --title "SafeKey Android (${GITHUB_SHA:0:7})" \
-            --notes "Automated signed Android release APK build." \
+            --notes "Automated signed Android release build. Use SafeKey-Android-arm64.apk on almost all phones; SafeKey-Android-armv7.apk is only for old 32-bit devices." \
             --prerelease --target "$GITHUB_SHA"

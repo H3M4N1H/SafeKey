@@ -2,7 +2,7 @@ name: Install SafeKey icon pack
 on:
   push:
     branches: [main]
-    paths: ['SafeKey_2D_Icon_Pack.zip']
+    paths: ['SafeKey_2D_Icon_Pack.zip', '.github/workflows/install-icons.yml']
   workflow_dispatch:
 permissions:
   contents: write

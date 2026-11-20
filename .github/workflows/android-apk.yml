@@ -3,8 +3,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src-tauri/gen/android/**'
-      - 'src-tauri/icons/**'
+      - 'src-tauri/**'
       - 'web/**'
       - '.github/workflows/android-apk.yml'
   workflow_dispatch:
@@ -32,28 +31,45 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install Tauri CLI
-        run: npm install
+      - name: Cache Rust
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: android-rust-${{ hashFiles('src-tauri/Cargo.lock') }}
+      - name: Install JS dependencies (provides the Tauri CLI)
+        run: npm ci
+      - name: Expose Tauri CLI to Gradle as cargo tauri
+        run: |
+          # The generated Android Gradle plugin shells out to `cargo tauri android android-studio-script`,
+          # so the CLI must be available as a cargo subcommand. The npm package ships the same CLI, so
+          # wrap it instead of compiling tauri-cli from source on every run.
+          cat > "$HOME/.cargo/bin/cargo-tauri" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          # Cargo passes the subcommand name as the first argument; the Tauri CLI does not expect it.
+          shift
+          exec node "$GITHUB_WORKSPACE/node_modules/@tauri-apps/cli/tauri.js" "$@"
+          EOF
+          chmod +x "$HOME/.cargo/bin/cargo-tauri"
+          cargo tauri --version
       - name: Ensure Gradle wrapper is executable
         run: chmod +x src-tauri/gen/android/gradlew
       - name: Build Android APK
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
-        run: npm run tauri:android:apk -- --verbose
-      - name: Diagnose Gradle failure
-        if: failure()
-        working-directory: src-tauri/gen/android
         run: |
-          chmod +x ./gradlew
-          ./gradlew assembleDebug --stacktrace --info --console=plain 2>&1 | tee "$RUNNER_TEMP/safekey-gradle-diagnostics.log"
-          exit ${PIPESTATUS[0]}
-      - name: Upload Gradle diagnostics
+          set -o pipefail
+          npm run tauri:android:apk -- --verbose 2>&1 | tee "$RUNNER_TEMP/safekey-android-build.log"
+      - name: Upload build log
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: SafeKey-Gradle-Diagnostics
-          path: ${{ runner.temp }}/safekey-gradle-diagnostics.log
+          name: SafeKey-Android-Build-Log
+          path: ${{ runner.temp }}/safekey-android-build.log
           if-no-files-found: ignore
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

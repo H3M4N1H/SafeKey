@@ -3,13 +3,15 @@
  * Enables offline use by caching all app assets.
  */
 
-const CACHE_NAME = 'safekey-v12';
+const CACHE_NAME = 'safekey-v13';
 const ASSETS = [
     '/',
     '/index.html',
     '/style.css',
     '/manifest.json',
     '/favicon.svg',
+    '/icon-192.png',
+    '/icon-512.png',
     '/safekey.png',
     '/js/app.js',
     '/js/crypto.js',

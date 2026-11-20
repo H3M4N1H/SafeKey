@@ -26,6 +26,19 @@ jobs:
                       z.extract(item)
           PY
 
+      - name: Normalize Tauri PNG icons to RGBA
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check Pillow
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          for path in Path('src-tauri/icons').glob('*.png'):
+              with Image.open(path) as source:
+                  source.convert('RGBA').save(path, format='PNG')
+                  print(f'Converted {path} to RGBA')
+          PY
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -86,6 +99,19 @@ jobs:
                       raise ValueError('Unsafe archive path')
                   if item.filename.startswith(('web/', 'src-tauri/icons/', 'src-tauri/gen/android/')):
                       z.extract(item)
+          PY
+
+      - name: Normalize Tauri PNG icons to RGBA
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check Pillow
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          for path in Path('src-tauri/icons').glob('*.png'):
+              with Image.open(path) as source:
+                  source.convert('RGBA').save(path, format='PNG')
+                  print(f'Converted {path} to RGBA')
           PY
 
       - name: Install Rust
